@@ -21,6 +21,11 @@ interface ZoomEffect {
   positionY: number;
 }
 
+interface MediaRecorderRef {
+  mediaRecorder: MediaRecorder | null;
+  chunks: Blob[];
+}
+
 // Add these easing functions at the top of the file
 const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
 const easeInOutCubic = (x: number): number => 
@@ -135,6 +140,7 @@ export default function App() {
   const [zoomFactor, setZoomFactor] = useState(1.5); // Default 50% zoom
   const [isPlaying, setIsPlaying] = useState(false);
   const [editingZoomId, setEditingZoomId] = useState<number | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -161,6 +167,7 @@ export default function App() {
   // Update trim handle dragging to work with single segment
   const handleTrimDrag = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isDraggingTrimStart || isDraggingTrimEnd) {
+      if (isRecording) return;
       const timeline = timelineRef.current;
       if (!timeline || !segment) return;
 
@@ -214,7 +221,7 @@ export default function App() {
 
   // Update timeline click to respect trim bounds
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isDraggingTrimStart || isDraggingTrimEnd) return;
+    if (isDraggingTrimStart || isDraggingTrimEnd || isRecording) return;
     
     const timeline = timelineRef.current;
     const video = videoRef.current;
@@ -275,47 +282,52 @@ export default function App() {
   };
 
   const processWithZoomEffects = async () => {
-    if (!currentVideo || !segment || segment.zoomEffects.length === 0) return;
+    if (!currentVideo || !segment || !canvasRef.current || !videoRef.current) return;
 
     try {
       setIsProcessing(true);
       
-      const inputFileName = 'input.mp4';
-      const outputFileName = 'output_with_zoom.mp4';
+      // Create media recorder
+      const stream = canvasRef.current.captureStream(60);
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9',
+        videoBitsPerSecond: 8000000
+      });
 
-      // Write current video to FFmpeg filesystem
-      const response = await fetch(currentVideo);
-      const videoData = await response.arrayBuffer();
-      ffmpeg.FS('writeFile', inputFileName, new Uint8Array(videoData));
+      const chunks: Blob[] = [];
+      
+      // Set up recording handlers
+      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+      
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'processed_video.webm';
+        a.click();
+        URL.revokeObjectURL(url);
+        setIsProcessing(false);
+      };
 
-      // Build FFmpeg filter command for zoom effects
-      const filterCommands = segment.zoomEffects.map(effect => {
-        const startTime = effect.time;
-        const endTime = effect.time + effect.duration;
-        const zoomExpression = `zoompan=z='if(between(t,${startTime},${endTime}),${effect.zoomFactor}+((t-${startTime})/${effect.duration})*(1-${effect.zoomFactor}),1)'`;
-        return zoomExpression;
-      }).join(',');
+      // Start recording
+      mediaRecorder.start();
 
-      // Process video with zoom effects
-      await ffmpeg.run(
-        '-i', inputFileName,
-        '-vf', filterCommands,
-        '-c:a', 'copy',
-        outputFileName
-      );
+      // Play video from start to end
+      videoRef.current.currentTime = segment.trimStart;
+      await videoRef.current.play();
 
-      const data = ffmpeg.FS('readFile', outputFileName);
-      const videoBlob = new Blob([data.buffer], { type: 'video/mp4' });
-      const videoUrl = URL.createObjectURL(videoBlob);
-      setCurrentVideo(videoUrl);
-
-      // Cleanup
-      ffmpeg.FS('unlink', inputFileName);
-      ffmpeg.FS('unlink', outputFileName);
+      // Stop recording when video reaches end
+      videoRef.current.ontimeupdate = () => {
+        if (videoRef.current && videoRef.current.currentTime >= segment.trimEnd) {
+          videoRef.current.pause();
+          mediaRecorder.stop();
+          videoRef.current.ontimeupdate = null;
+        }
+      };
 
     } catch (error) {
-      console.error('Error applying zoom effects:', error);
-    } finally {
+      console.error('Error recording video:', error);
       setIsProcessing(false);
     }
   };
@@ -369,12 +381,12 @@ export default function App() {
 
   // Memoize video event handlers
   const handleVideoEvent = useCallback((event: string) => {
-    if (event === 'seeking') {
+    if (event === 'seeking' && !isRecording) {
       handleSeeking();
-    } else {
+    } else if (event !== 'seeking') { // Only log non-seeking events
       debugLog(`Video event: ${event}`);
     }
-  }, [handleSeeking]);
+  }, [handleSeeking, isRecording]);
 
   // Move these handlers outside the effect
   const playHandler = useCallback(() => handleVideoEvent('play'), [handleVideoEvent]);
@@ -672,6 +684,7 @@ export default function App() {
                 <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 bg-[#1a1a1b]/90 rounded-full p-2 backdrop-blur-sm">
                   <Button
                     onClick={togglePlay}
+                    disabled={isRecording}
                     variant="ghost"
                     className="text-[#d7dadc] hover:bg-[#343536]"
                   >

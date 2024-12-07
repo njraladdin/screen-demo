@@ -1,0 +1,3 @@
+fix flickering in zoom movements in export video 
+
+fix crazy rerendering 123890App.tsx:46 [DEBUG] Video event: seeking, esepcailly starts when trimming the video
