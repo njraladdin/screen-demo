@@ -1,10 +1,10 @@
 import { createFFmpeg, fetchFile } from '@ffmpeg/ffmpeg'
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Play, Pause, Plus, Search, Download } from "lucide-react"
 
 // Create FFmpeg instance outside the component
-const ffmpeg = createFFmpeg({ log: true });
+const ffmpeg = createFFmpeg({ log: false });
 
 interface VideoSegment {
   id: string;
@@ -25,6 +25,100 @@ interface ZoomEffect {
 const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
 const easeInOutCubic = (x: number): number => 
   x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+
+// Add these at the top of the file after imports
+const DEBUG = true;
+let lastFrameTime = performance.now();
+let frameCount = 0;
+let lastFPSUpdate = performance.now();
+
+// Add this helper function
+function debugLog(message: string, data?: any) {
+  if (DEBUG) {
+    if (data) {
+      console.log(`[DEBUG] ${message}`, data);
+    } else {
+      console.log(`[DEBUG] ${message}`);
+    }
+  }
+}
+
+// Add this custom debounce implementation
+function debounce<T extends (...args: any[]) => any>(
+  func: T,
+  wait: number
+): {
+  (...args: Parameters<T>): void;
+  cancel: () => void;
+} {
+  let timeout: NodeJS.Timeout | null = null;
+
+  const executedFunction = function (...args: Parameters<T>) {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+
+    timeout = setTimeout(() => {
+      func(...args);
+      timeout = null;
+    }, wait);
+  };
+
+  executedFunction.cancel = () => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  };
+
+  return executedFunction;
+}
+
+// Add this utility
+const useDebounce = (callback: Function, delay: number) => {
+  const debouncedFn = useMemo(
+    () => {
+      const fn = debounce((...args: any) => callback(...args), delay);
+      // Add a cancel method to match lodash interface
+      fn.cancel = () => {
+        // Implementation not needed since we're using setTimeout
+      };
+      return fn;
+    },
+    [callback, delay]
+  );
+
+  useEffect(() => {
+    return () => {
+      debouncedFn.cancel();
+    };
+  }, [debouncedFn]);
+
+  return debouncedFn;
+};
+
+// Remove the separate debug variables and memory check effect
+// Instead, add a simple debug utility:
+const useDebugMonitor = (data: Record<string, any>) => {
+  useEffect(() => {
+    if (!DEBUG) return;
+
+    debugLog('State updated', data);
+
+    // Log performance stats every 5 seconds
+    const interval = setInterval(() => {
+      if ('memory' in performance) {
+        // @ts-ignore
+        const { usedJSHeapSize, totalJSHeapSize } = performance.memory;
+        debugLog('Performance stats', {
+          memory: `${Math.round(usedJSHeapSize / 1024 / 1024)}MB / ${Math.round(totalJSHeapSize / 1024 / 1024)}MB`,
+          fps: Math.round(1000 / (performance.now() - lastFrameTime))
+        });
+      }
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [data]);
+};
 
 export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -50,26 +144,6 @@ export default function App() {
 
   // Add FFmpeg.js progress handler
   ffmpeg.setProgress(({ ratio }) => setProgress(Math.round(ratio * 100)));
-
-  // Update currentTime when video plays
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const handleTimeUpdate = () => setCurrentTime(video.currentTime);
-    const handleLoadedMetadata = () => setDuration(video.duration);
-    const handleLoadedData = () => setDuration(video.duration);
-
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('loadedmetadata', handleLoadedMetadata);
-    video.addEventListener('loadeddata', handleLoadedData);
-
-    return () => {
-      video.removeEventListener('timeupdate', handleTimeUpdate);
-      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
-      video.removeEventListener('loadeddata', handleLoadedData);
-    };
-  }, [currentVideo]);
 
   // Initialize single segment when video loads
   useEffect(() => {
@@ -283,160 +357,189 @@ export default function App() {
     }
   };
 
-  // Add effect to initialize canvas and handle rendering
+  // Memoize zoom effects sorting
+  const sortedZoomEffects = useMemo(() => {
+    return segment?.zoomEffects.sort((a, b) => a.time - b.time) || [];
+  }, [segment?.zoomEffects]);
+
+  // Debounce seeking handler
+  const handleSeeking = useDebounce(() => {
+    debugLog('Video event: seeking');
+  }, 100);
+
+  // Memoize video event handlers
+  const handleVideoEvent = useCallback((event: string) => {
+    if (event === 'seeking') {
+      handleSeeking();
+    } else {
+      debugLog(`Video event: ${event}`);
+    }
+  }, [handleSeeking]);
+
+  // Move these handlers outside the effect
+  const playHandler = useCallback(() => handleVideoEvent('play'), [handleVideoEvent]);
+  const pauseHandler = useCallback(() => handleVideoEvent('pause'), [handleVideoEvent]);
+  const seekingHandler = useCallback(() => handleVideoEvent('seeking'), [handleVideoEvent]);
+  const waitingHandler = useCallback(() => handleVideoEvent('waiting'), [handleVideoEvent]);
+  const stalledHandler = useCallback(() => handleVideoEvent('stalled'), [handleVideoEvent]);
+
+  // Update canvas effect to use memoized values
   useEffect(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !segment) return;
 
-    // Setup canvas
+    debugLog('Video effect mounted');
+    
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     canvasCtxRef.current = ctx;
 
-    // Match canvas size to video
-    const updateCanvasSize = () => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-    };
-    
-    // Update the drawFrame function with smoother transitions
-    const drawFrame = () => {
-      if (!ctx || !video) return;
+    // Set initial canvas size
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.save();
-      
-      // Find the last zoom effect before current time
-      const activeZoom = segment.zoomEffects
-        .sort((a, b) => a.time - b.time)
-        .filter(effect => video.currentTime >= effect.time)
+    // Single event handler for all video events
+    const handleVideoEvent = (event: string) => {
+      debugLog(`Video event: ${event}`);
+    };
+
+    // Combine all video event listeners
+    const events = ['play', 'pause', 'seeking', 'waiting', 'stalled'];
+    events.forEach(event => video.addEventListener(event, () => handleVideoEvent(event)));
+
+    return () => {
+      events.forEach(event => video.removeEventListener(event, () => handleVideoEvent(event)));
+    };
+  }, [segment]);
+
+  // Update the drawFrame function to run during playback OR when editing zoom
+  const drawFrame = useCallback(() => {
+    const ctx = canvasCtxRef.current;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!ctx || !video || !segment || !canvas) return;
+
+    // Update current time
+    setCurrentTime(video.currentTime);
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    
+    // Find active zoom effect
+    const activeZoom = sortedZoomEffects
+      .filter(effect => video.currentTime >= effect.time)
+      .pop();
+
+    if (activeZoom) {
+      // Find the previous zoom effect
+      const previousZoom = sortedZoomEffects
+        .filter(effect => effect.time < activeZoom.time)
         .pop();
 
-      if (activeZoom) {
-        // Find the previous zoom effect
-        const previousZoom = segment.zoomEffects
-          .sort((a, b) => a.time - b.time)
-          .filter(effect => effect.time < activeZoom.time)
-          .pop();
+      let currentZoom = activeZoom.zoomFactor;
+      let currentPosX = activeZoom.positionX;
+      let currentPosY = activeZoom.positionY;
 
-        let currentZoom = activeZoom.zoomFactor;
-        let currentPosX = activeZoom.positionX;
-        let currentPosY = activeZoom.positionY;
+      const TRANSITION_DURATION = 1.0;
+      const transitionProgress = Math.min(
+        (video.currentTime - activeZoom.time) / TRANSITION_DURATION,
+        1
+      );
+      
+      const easedProgress = easeOutCubic(transitionProgress);
 
-        const TRANSITION_DURATION = 1.0;
-        
-        // Calculate transition progress
-        const transitionProgress = Math.min(
-          (video.currentTime - activeZoom.time) / TRANSITION_DURATION,
-          1
-        );
-        
-        // Apply easing
-        const easedProgress = easeOutCubic(transitionProgress);
-
-        if (previousZoom) {
-          // Interpolate between previous and current values
-          currentZoom = previousZoom.zoomFactor + (activeZoom.zoomFactor - previousZoom.zoomFactor) * easedProgress;
-          currentPosX = previousZoom.positionX + (activeZoom.positionX - previousZoom.positionX) * easedProgress;
-          currentPosY = previousZoom.positionY + (activeZoom.positionY - previousZoom.positionY) * easedProgress;
-        } else {
-          // For first zoom, immediately use target position but ease the zoom
-          currentZoom = 1 + (activeZoom.zoomFactor - 1) * easedProgress;
-          currentPosX = activeZoom.positionX;  // Use target position immediately
-          currentPosY = activeZoom.positionY;  // Use target position immediately
-        }
-
-        // Calculate the scaled dimensions with subpixel accuracy
-        const scaledWidth = canvas.width * currentZoom;
-        const scaledHeight = canvas.height * currentZoom;
-        
-        // Calculate the position offset based on the interpolated position
-        const offsetX = (canvas.width - scaledWidth) * currentPosX;
-        const offsetY = (canvas.height - scaledHeight) * currentPosY;
-
-        // Apply transform with subpixel rendering
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        
-        ctx.translate(Math.round(offsetX * 100) / 100, Math.round(offsetY * 100) / 100);
-        ctx.scale(currentZoom, currentZoom);
+      if (previousZoom) {
+        currentZoom = previousZoom.zoomFactor + (activeZoom.zoomFactor - previousZoom.zoomFactor) * easedProgress;
+        currentPosX = previousZoom.positionX + (activeZoom.positionX - previousZoom.positionX) * easedProgress;
+        currentPosY = previousZoom.positionY + (activeZoom.positionY - previousZoom.positionY) * easedProgress;
+      } else {
+        currentZoom = 1 + (activeZoom.zoomFactor - 1) * easedProgress;
+        currentPosX = activeZoom.positionX;
+        currentPosY = activeZoom.positionY;
       }
 
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      ctx.restore();
+      const scaledWidth = canvas.width * currentZoom;
+      const scaledHeight = canvas.height * currentZoom;
+      const offsetX = (canvas.width - scaledWidth) * currentPosX;
+      const offsetY = (canvas.height - scaledHeight) * currentPosY;
+      
+      ctx.translate(offsetX, offsetY);
+      ctx.scale(currentZoom, currentZoom);
+    }
 
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.restore();
+
+    // Always request next frame while playing or zooming
+    if (isPlaying || isAddingZoom) {
       animationFrameRef.current = requestAnimationFrame(drawFrame);
-    };
+    }
+  }, [segment, sortedZoomEffects, isPlaying, isAddingZoom]);
 
-    // Handle video events
-    const handlePlay = () => {
+  // Update the canvas initialization effect to match
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !segment) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    canvasCtxRef.current = ctx;
+
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 360;
+
+    // Start animation if playing OR editing zoom
+    if (isPlaying || isAddingZoom) {
+      animationFrameRef.current = requestAnimationFrame(drawFrame);
+    } else {
       drawFrame();
-    };
+    }
 
-    const handlePause = () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-
-    const handleSeeked = () => {
-      drawFrame();
-    };
-
-    // Update canvas size when video metadata is loaded
-    video.addEventListener('loadedmetadata', updateCanvasSize);
-    video.addEventListener('play', handlePlay);
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('seeked', handleSeeked);
-
-    // Initial draw
-    updateCanvasSize();
-    drawFrame();
-
-    // Cleanup
     return () => {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
-      video.removeEventListener('loadedmetadata', updateCanvasSize);
-      video.removeEventListener('play', handlePlay);
-      video.removeEventListener('pause', handlePause);
-      video.removeEventListener('seeked', handleSeeked);
     };
-  }, [segment]);
+  }, [drawFrame, isPlaying, isAddingZoom]);
 
   // Add play/pause control function
-  const togglePlay = () => {
-    if (!videoRef.current) return;
+  const togglePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
     
     if (isPlaying) {
-      videoRef.current.pause();
+      video.pause();
+      drawFrame();
     } else {
-      videoRef.current.play();
+      video.play();
     }
     setIsPlaying(!isPlaying);
-  };
+  }, [isPlaying, drawFrame]);
 
-  // Add effect to sync video play state
+  // Add this single effect for play state sync
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    const handlePause = () => setIsPlaying(false);
-    const handlePlay = () => setIsPlaying(true);
-    const handleEnded = () => setIsPlaying(false);
+    const handlePlayStateChange = (event: Event) => {
+      setIsPlaying(event.type === 'play');
+      if (event.type === 'ended' || event.type === 'pause') {
+        drawFrame(); // Ensure we show the last frame
+      }
+    };
 
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('play', handlePlay);
-    video.addEventListener('ended', handleEnded);
+    ['play', 'pause', 'ended'].forEach(event => 
+      video.addEventListener(event, handlePlayStateChange)
+    );
 
     return () => {
-      video.removeEventListener('pause', handlePause);
-      video.removeEventListener('play', handlePlay);
-      video.removeEventListener('ended', handleEnded);
+      ['play', 'pause', 'ended'].forEach(event => 
+        video.removeEventListener(event, handlePlayStateChange)
+      );
     };
-  }, []);
+  }, [drawFrame]);
 
   // Add this effect to handle showing/hiding zoom configuration based on playhead position
   useEffect(() => {
@@ -495,6 +598,23 @@ export default function App() {
     setEditingZoomId(newZoomEffects.length - 1);
   };
 
+  // Add render tracking
+  useEffect(() => {
+    debugLog('Component rendered with props', {
+      isProcessing,
+      currentTime,
+      isPlaying,
+      zoomEffects: segment?.zoomEffects.length
+    });
+  }, [isProcessing, currentTime, isPlaying, segment]);
+
+  // Use it in the component:
+  useDebugMonitor({
+    isPlaying,
+    currentTime,
+    zoomEffects: segment?.zoomEffects.length
+  });
+
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
       {/* Header */}
@@ -538,6 +658,7 @@ export default function App() {
                   ref={videoRef}
                   src={currentVideo}
                   className="hidden"
+                  playsInline
                   onLoadedMetadata={(e) => {
                     setDuration(e.currentTarget.duration);
                   }}
