@@ -17,7 +17,14 @@ interface ZoomEffect {
   time: number;
   duration: number;
   zoomFactor: number;
+  positionX: number;
+  positionY: number;
 }
+
+// Add these easing functions at the top of the file
+const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
+const easeInOutCubic = (x: number): number => 
+  x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
 
 export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
@@ -239,23 +246,27 @@ export default function App() {
     }
   };
 
-  const handleZoomChange = (duration: number, factor: number) => {
-    if (!segment || !videoRef.current) return;
+  const handleZoomChange = (factor: number, posX?: number, posY?: number) => {
+    if (!segment || !videoRef.current || editingZoomId === null) return;
+    
+    const existingZoom = segment.zoomEffects[editingZoomId];
     
     const newZoomEffect: ZoomEffect = {
-      time: videoRef.current.currentTime,
-      duration: duration,
-      zoomFactor: factor
+      time: existingZoom.time,
+      duration: 0.5,
+      zoomFactor: factor,
+      positionX: posX ?? existingZoom.positionX,
+      positionY: posY ?? existingZoom.positionY
     };
 
     setSegment({
       ...segment,
-      zoomEffects: editingZoomId !== null
-        ? segment.zoomEffects.map((effect, index) => 
-            index === editingZoomId ? newZoomEffect : effect
-          )
-        : [...segment.zoomEffects, { ...newZoomEffect }]
+      zoomEffects: segment.zoomEffects.map((effect, index) => 
+        index === editingZoomId ? newZoomEffect : effect
+      )
     });
+
+    videoRef.current.currentTime = newZoomEffect.time + newZoomEffect.duration;
   };
 
   const startEditingZoom = (index: number) => {
@@ -266,9 +277,9 @@ export default function App() {
     setEditingZoomId(index);
     setIsAddingZoom(true);
     
-    // Set playhead to zoom position
+    // Set playhead to end of zoom transition
     if (videoRef.current) {
-      videoRef.current.currentTime = zoomEffect.time;
+      videoRef.current.currentTime = zoomEffect.time + zoomEffect.duration;
     }
   };
 
@@ -289,41 +300,67 @@ export default function App() {
       canvas.height = video.videoHeight;
     };
     
-    // Draw function with zoom effect
+    // Update the drawFrame function with smoother transitions
     const drawFrame = () => {
       if (!ctx || !video) return;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.save();
       
-      // Find active zoom effect at current time
-      const activeZoom = segment.zoomEffects.find(effect => 
-        video.currentTime >= effect.time && 
-        video.currentTime <= (effect.time + effect.duration)
-      );
+      // Find the last zoom effect before current time
+      const activeZoom = segment.zoomEffects
+        .sort((a, b) => a.time - b.time)
+        .filter(effect => video.currentTime >= effect.time)
+        .pop();
 
       if (activeZoom) {
-        // Calculate progress through the zoom effect (0 to 1)
-        const progress = (video.currentTime - activeZoom.time) / activeZoom.duration;
+        // Find the previous zoom effect
+        const previousZoom = segment.zoomEffects
+          .sort((a, b) => a.time - b.time)
+          .filter(effect => effect.time < activeZoom.time)
+          .pop();
+
+        let currentZoom = activeZoom.zoomFactor;
+        let currentPosX = activeZoom.positionX;
+        let currentPosY = activeZoom.positionY;
+
+        const TRANSITION_DURATION = 1.0;
         
-        // Calculate zoom factor:
-        // Start at 1 (no zoom)
-        // Smoothly transition to target zoom
-        // Then smoothly transition back to 1
-        let currentZoom;
-        if (progress < 0.5) {
-          // Zoom in during first half
-          currentZoom = 1 + (2 * progress) * (activeZoom.zoomFactor - 1);
+        // Calculate transition progress
+        const transitionProgress = Math.min(
+          (video.currentTime - activeZoom.time) / TRANSITION_DURATION,
+          1
+        );
+        
+        // Apply easing
+        const easedProgress = easeOutCubic(transitionProgress);
+
+        if (previousZoom) {
+          // Interpolate between previous and current values
+          currentZoom = previousZoom.zoomFactor + (activeZoom.zoomFactor - previousZoom.zoomFactor) * easedProgress;
+          currentPosX = previousZoom.positionX + (activeZoom.positionX - previousZoom.positionX) * easedProgress;
+          currentPosY = previousZoom.positionY + (activeZoom.positionY - previousZoom.positionY) * easedProgress;
         } else {
-          // Zoom out during second half
-          currentZoom = activeZoom.zoomFactor - (2 * (progress - 0.5)) * (activeZoom.zoomFactor - 1);
+          // For first zoom, immediately use target position but ease the zoom
+          currentZoom = 1 + (activeZoom.zoomFactor - 1) * easedProgress;
+          currentPosX = activeZoom.positionX;  // Use target position immediately
+          currentPosY = activeZoom.positionY;  // Use target position immediately
         }
 
-        const centerX = canvas.width / 2;
-        const centerY = canvas.height / 2;
-        ctx.translate(centerX, centerY);
+        // Calculate the scaled dimensions with subpixel accuracy
+        const scaledWidth = canvas.width * currentZoom;
+        const scaledHeight = canvas.height * currentZoom;
+        
+        // Calculate the position offset based on the interpolated position
+        const offsetX = (canvas.width - scaledWidth) * currentPosX;
+        const offsetY = (canvas.height - scaledHeight) * currentPosY;
+
+        // Apply transform with subpixel rendering
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        
+        ctx.translate(Math.round(offsetX * 100) / 100, Math.round(offsetY * 100) / 100);
         ctx.scale(currentZoom, currentZoom);
-        ctx.translate(-centerX, -centerY);
       }
 
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -428,10 +465,22 @@ export default function App() {
   const handleAddZoom = () => {
     if (!segment || !videoRef.current) return;
     
+    // Find the last zoom effect before current time
+    const previousZoom = [...segment.zoomEffects]
+      .sort((a, b) => a.time - b.time)
+      .reduce((current, effect) => {
+        if (videoRef.current && effect.time < videoRef.current.currentTime) {
+          return effect;
+        }
+        return current;
+      }, null);
+
     const newZoomEffect: ZoomEffect = {
       time: videoRef.current.currentTime,
-      duration: 1,
-      zoomFactor: 1.5
+      duration: 0.5,
+      zoomFactor: previousZoom ? previousZoom.zoomFactor : 1.5, // Start from previous zoom or default
+      positionX: previousZoom ? previousZoom.positionX : 0.5,
+      positionY: previousZoom ? previousZoom.positionY : 0.5
     };
 
     const newZoomEffects = [...segment.zoomEffects, newZoomEffect];
@@ -441,8 +490,7 @@ export default function App() {
     });
     
     // Start editing the new zoom
-    setZoomDuration(1);
-    setZoomFactor(1.5);
+    setZoomFactor(newZoomEffect.zoomFactor);
     setIsAddingZoom(true);
     setEditingZoomId(newZoomEffects.length - 1);
   };
@@ -536,8 +584,8 @@ export default function App() {
                 </div>
 
                 <div className="relative h-32">
-                  {/* Timeline markers - increase z-index */}
-                  <div className="absolute w-full flex justify-between text-xs text-white z-20">
+                  {/* Timeline markers - highest z-index except for playhead */}
+                  <div className="absolute w-full flex justify-between text-xs text-white z-40 pointer-events-none">
                     {Array.from({ length: 11 }).map((_, i) => {
                       const time = (duration * i) / 10;
                       return (
@@ -563,41 +611,60 @@ export default function App() {
                       setIsDraggingTrimEnd(false);
                     }}
                   >
-                    {segment?.zoomEffects.map((effect, index) => (
-                      <div
-                        key={index}
-                        onClick={() => startEditingZoom(index)}
-                        className={`absolute h-full cursor-pointer group ${
-                          editingZoomId === index ? 'bg-[#0079d3]/40' : 'bg-[#0079d3]/20'
-                        } hover:bg-[#0079d3]/40 transition-colors border-l-2 border-r-2 border-[#0079d3] z-10`}
-                        style={{
-                          left: `${(effect.time / duration) * 100}%`,
-                          width: `${(effect.duration / duration) * 100}%`,
-                        }}
-                      >
-                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-xs whitespace-nowrap bg-[#0079d3] text-white px-2 rounded">
-                          {Math.round((effect.zoomFactor - 1) * 100)}% zoom
-                        </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (segment) {
-                              setSegment({
-                                ...segment,
-                                zoomEffects: segment.zoomEffects.filter((_, i) => i !== index)
-                              });
-                            }
-                          }}
-                          className="absolute -right-2 -top-2 w-4 h-4 bg-red-500 rounded-full text-white 
-                            flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-20"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
+                    {/* Zoom effects - should be above the black overlay */}
+                    {segment?.zoomEffects.map((effect, index) => {
+                      // Find the previous zoom effect
+                      const previousZoom = [...segment.zoomEffects]
+                        .sort((a, b) => a.time - b.time)
+                        .reduce((current, effect2) => {
+                          if (effect2.time < effect.time) {
+                            return effect2;
+                          }
+                          return current;
+                        }, null);
 
+                      const fromZoom = previousZoom ? 
+                        Math.round((previousZoom.zoomFactor - 1) * 100) : 
+                        0;
+                      const toZoom = Math.round((effect.zoomFactor - 1) * 100);
+
+                      return (
+                        <div
+                          key={index}
+                          onClick={() => startEditingZoom(index)}
+                          className={`absolute h-full cursor-pointer group ${
+                            editingZoomId === index ? 'bg-[#0079d3]/40' : 'bg-[#0079d3]/20'
+                          } hover:bg-[#0079d3]/40 transition-colors border-l-2 border-r-2 border-[#0079d3] z-50`}
+                          style={{
+                            left: `${(effect.time / duration) * 100}%`,
+                            width: `${(effect.duration / duration) * 100}%`,
+                          }}
+                        >
+                          <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-xs whitespace-nowrap bg-[#0079d3] text-white px-2 rounded z-35">
+                            {fromZoom}% → {toZoom}% zoom
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (segment) {
+                                setSegment({
+                                  ...segment,
+                                  zoomEffects: segment.zoomEffects.filter((_, i) => i !== index)
+                                });
+                              }
+                            }}
+                            className="absolute -right-2 -top-2 w-4 h-4 bg-red-500 rounded-full text-white 
+                              flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-35"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      );
+                    })}
+
+                    {/* Black overlay for trimmed areas */}
                     {segment && (
-                      <div className="absolute top-0 bottom-0 w-full bg-[#272729]">
+                      <div className="absolute top-0 bottom-0 w-full bg-[#272729] z-20">
                         <div
                           className="absolute top-0 bottom-0 bg-black/50"
                           style={{
@@ -615,7 +682,27 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* Playhead has highest z-index */}
+                    {/* Trim handles */}
+                    {segment && (
+                      <>
+                        <div
+                          className="absolute top-0 bottom-0 w-1 bg-white cursor-col-resize z-30 hover:bg-blue-500"
+                          style={{
+                            left: `${(segment.trimStart / duration) * 100}%`,
+                          }}
+                          onMouseDown={() => setIsDraggingTrimStart(true)}
+                        />
+                        <div
+                          className="absolute top-0 bottom-0 w-1 bg-white cursor-col-resize z-30 hover:bg-blue-500"
+                          style={{
+                            left: `${(segment.trimEnd / duration) * 100}%`,
+                          }}
+                          onMouseDown={() => setIsDraggingTrimEnd(true)}
+                        />
+                      </>
+                    )}
+
+                    {/* Playhead - highest z-index */}
                     <div 
                       className="absolute top-[-8px] bottom-0 flex flex-col items-center pointer-events-none z-50"
                       style={{ 
@@ -639,31 +726,7 @@ export default function App() {
                       At {formatTime(currentTime)}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-8">
-                    <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2">
-                        Zoom Duration
-                      </label>
-                      <div className="space-y-2">
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="5"
-                          step="0.1"
-                          value={zoomDuration}
-                          onChange={(e) => {
-                            setZoomDuration(Number(e.target.value));
-                            handleZoomChange(Number(e.target.value), zoomFactor);
-                          }}
-                          className="w-full accent-[#0079d3]"
-                        />
-                        <div className="flex justify-between text-sm text-[#818384]">
-                          <span>0.1s</span>
-                          <span>{zoomDuration}s</span>
-                          <span>5s</span>
-                        </div>
-                      </div>
-                    </div>
+                  <div className="space-y-6">
                     <div>
                       <label className="block text-sm font-medium text-[#d7dadc] mb-2">
                         Zoom Factor
@@ -677,7 +740,7 @@ export default function App() {
                           value={zoomFactor}
                           onChange={(e) => {
                             setZoomFactor(Number(e.target.value));
-                            handleZoomChange(zoomDuration, Number(e.target.value));
+                            handleZoomChange(Number(e.target.value));
                           }}
                           className="w-full accent-[#0079d3]"
                         />
@@ -685,6 +748,56 @@ export default function App() {
                           <span>No zoom</span>
                           <span>{Math.round((zoomFactor - 1) * 100)}%</span>
                           <span>200%</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-[#d7dadc] mb-2">
+                          Horizontal Position
+                        </label>
+                        <div className="space-y-2">
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            value={segment?.zoomEffects[editingZoomId!]?.positionX ?? 0.5}
+                            onChange={(e) => {
+                              handleZoomChange(zoomFactor, Number(e.target.value), undefined);
+                            }}
+                            className="w-full accent-[#0079d3]"
+                          />
+                          <div className="flex justify-between text-sm text-[#818384]">
+                            <span>Left</span>
+                            <span>Center</span>
+                            <span>Right</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <label className="block text-sm font-medium text-[#d7dadc] mb-2">
+                          Vertical Position
+                        </label>
+                        <div className="space-y-2">
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.01"
+                            value={segment?.zoomEffects[editingZoomId!]?.positionY ?? 0.5}
+                            onChange={(e) => {
+                              handleZoomChange(zoomFactor, undefined, Number(e.target.value));
+                            }}
+                            className="w-full accent-[#0079d3]"
+                          />
+                          <div className="flex justify-between text-sm text-[#818384]">
+                            <span>Top</span>
+                            <span>Center</span>
+                            <span>Bottom</span>
+                          </div>
                         </div>
                       </div>
                     </div>
