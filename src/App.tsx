@@ -213,16 +213,14 @@ export default function App() {
   const [isDraggingTrimEnd, setIsDraggingTrimEnd] = useState(false);
   const [segment, setSegment] = useState<VideoSegment | null>(null);
   const [isAddingZoom, setIsAddingZoom] = useState(false);
-  const [zoomDuration, setZoomDuration] = useState(1); // Default 1 second
   const [zoomFactor, setZoomFactor] = useState(1.5); // Default 50% zoom
   const [isPlaying, setIsPlaying] = useState(false);
   const [editingZoomId, setEditingZoomId] = useState<number | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
-  const { canvasRef, drawFrame } = useVideoCanvas({
+  const { canvasRef } = useVideoCanvas({
     video: videoRef.current,
     segment,
     isPlaying,
@@ -246,7 +244,6 @@ export default function App() {
   // Update trim handle dragging to work with single segment
   const handleTrimDrag = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isDraggingTrimStart || isDraggingTrimEnd) {
-      if (isRecording) return;
       const timeline = timelineRef.current;
       if (!timeline || !segment) return;
 
@@ -300,7 +297,7 @@ export default function App() {
 
   // Update timeline click to respect trim bounds
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isDraggingTrimStart || isDraggingTrimEnd || isRecording) return;
+    if (isDraggingTrimStart || isDraggingTrimEnd) return;
     
     const timeline = timelineRef.current;
     const video = videoRef.current;
@@ -462,7 +459,6 @@ export default function App() {
   const startEditingZoom = (index: number) => {
     if (!segment) return;
     const zoomEffect = segment.zoomEffects[index];
-    setZoomDuration(zoomEffect.duration);
     setZoomFactor(zoomEffect.zoomFactor);
     setEditingZoomId(index);
     setIsAddingZoom(true);
@@ -536,7 +532,7 @@ export default function App() {
       );
       video.removeEventListener('error', handleError);
     };
-  }, [isRecording]);
+  }, []);
 
   // Add this effect to handle showing/hiding zoom configuration based on playhead position
   useEffect(() => {
@@ -552,7 +548,6 @@ export default function App() {
       // Show zoom configuration for the active zoom
       setIsAddingZoom(true);
       setEditingZoomId(activeZoom);
-      setZoomDuration(segment.zoomEffects[activeZoom].duration);
       setZoomFactor(segment.zoomEffects[activeZoom].zoomFactor);
     } else {
       // Hide zoom configuration when not in a zoom effect
@@ -607,9 +602,7 @@ export default function App() {
 
   // Debounce seeking handler
   const handleSeeking = () => {
-    if (!isRecording) {
-      debugLog('Video event: seeking');
-    }
+    debugLog('Video event: seeking');
   };
 
   return (
@@ -673,7 +666,7 @@ export default function App() {
                 <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 bg-[#1a1a1b]/90 rounded-full p-2 backdrop-blur-sm">
                   <Button
                     onClick={togglePlay}
-                    disabled={isRecording}
+                    disabled={isProcessing}
                     variant="ghost"
                     className="text-[#d7dadc] hover:bg-[#343536]"
                   >
