@@ -1,10 +1,6 @@
-import { createFFmpeg, fetchFile } from '@ffmpeg/ffmpeg'
 import { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { Play, Pause, Plus, Search, Download } from "lucide-react"
-
-// Create FFmpeg instance outside the component
-const ffmpeg = createFFmpeg({ log: false });
 
 interface VideoSegment {
   id: string;
@@ -21,22 +17,21 @@ interface ZoomEffect {
   positionY: number;
 }
 
-interface MediaRecorderRef {
-  mediaRecorder: MediaRecorder | null;
-  chunks: Blob[];
-}
+
 
 // Add these easing functions at the top of the file
 const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
-const easeInOutCubic = (x: number): number => 
-  x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+
+// Helper function to find the previous zoom effect before a given time
+const findPreviousZoom = (effects: ZoomEffect[], currentTime: number): ZoomEffect | null => {
+  return effects
+    .filter(effect => effect.time < currentTime)
+    .sort((a, b) => b.time - a.time)[0] || null;
+};
 
 // Add these at the top of the file after imports
 const DEBUG = true;
 let lastFrameTime = performance.now();
-let frameCount = 0;
-let lastFPSUpdate = performance.now();
-
 // Add this helper function
 function debugLog(message: string, data?: any) {
   if (DEBUG) {
@@ -48,58 +43,7 @@ function debugLog(message: string, data?: any) {
   }
 }
 
-// Add this custom debounce implementation
-function debounce<T extends (...args: any[]) => any>(
-  func: T,
-  wait: number
-): {
-  (...args: Parameters<T>): void;
-  cancel: () => void;
-} {
-  let timeout: NodeJS.Timeout | null = null;
 
-  const executedFunction = function (...args: Parameters<T>) {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-
-    timeout = setTimeout(() => {
-      func(...args);
-      timeout = null;
-    }, wait);
-  };
-
-  executedFunction.cancel = () => {
-    if (timeout) {
-      clearTimeout(timeout);
-    }
-  };
-
-  return executedFunction;
-}
-
-// Add this utility
-const useDebounce = (callback: Function, delay: number) => {
-  const debouncedFn = useMemo(
-    () => {
-      const fn = debounce((...args: any) => callback(...args), delay);
-      // Add a cancel method to match lodash interface
-      fn.cancel = () => {
-        // Implementation not needed since we're using setTimeout
-      };
-      return fn;
-    },
-    [callback, delay]
-  );
-
-  useEffect(() => {
-    return () => {
-      debouncedFn.cancel();
-    };
-  }, [debouncedFn]);
-
-  return debouncedFn;
-};
 
 // Remove the separate debug variables and memory check effect
 // Instead, add a simple debug utility:
@@ -125,11 +69,144 @@ const useDebugMonitor = (data: Record<string, any>) => {
   }, [data]);
 };
 
+// Add this custom hook near the top of the file
+const useVideoCanvas = (options: {
+  video: HTMLVideoElement | null,
+  segment: VideoSegment | null,
+  isPlaying: boolean,
+  isAddingZoom: boolean,
+  onTimeUpdate: (time: number) => void
+}) => {
+  const { video, segment, isPlaying, isAddingZoom, onTimeUpdate } = options;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const animationFrameRef = useRef<number>();
+
+  // Sort zoom effects once
+  const sortedZoomEffects = useMemo(() => {
+    return segment?.zoomEffects.sort((a, b) => a.time - b.time) || [];
+  }, [segment?.zoomEffects]);
+
+  const drawFrame = useCallback(() => {
+    const ctx = canvasCtxRef.current;
+    const canvas = canvasRef.current;
+    if (!ctx || !video || !segment || !canvas) return;
+
+    // Skip frame if we're too far behind
+    const now = performance.now();
+    const timeSinceLastFrame = now - lastFrameTime;
+    if (timeSinceLastFrame < 16) { // Target 60fps
+      animationFrameRef.current = requestAnimationFrame(drawFrame);
+      return;
+    }
+    lastFrameTime = now;
+
+    onTimeUpdate(video.currentTime);
+
+    // Only clear and save context if we're actually going to draw
+    const activeZoom = sortedZoomEffects
+      .filter(effect => video.currentTime >= effect.time)
+      .pop();
+
+    if (activeZoom) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.save();
+
+      const previousZoom = findPreviousZoom(sortedZoomEffects, activeZoom.time);
+      const { currentZoom, currentPosX, currentPosY } = calculateZoomTransition(
+        video.currentTime,
+        activeZoom,
+        previousZoom
+      );
+
+      applyZoomTransform(ctx, canvas, currentZoom, currentPosX, currentPosY);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    } else {
+      // No zoom effect - direct draw
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    }
+
+    if (isPlaying) {
+      animationFrameRef.current = requestAnimationFrame(drawFrame);
+    }
+  }, [video, segment, sortedZoomEffects, isPlaying, isAddingZoom, onTimeUpdate]);
+
+  // Initialize canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !segment) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    canvasCtxRef.current = ctx;
+
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 360;
+
+    if (isPlaying) {
+      animationFrameRef.current = requestAnimationFrame(drawFrame);
+    } else {
+      drawFrame();
+    }
+
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, [video, segment, drawFrame, isPlaying, isAddingZoom]);
+
+  return { canvasRef, drawFrame };
+};
+
+// Helper functions
+const calculateZoomTransition = (
+  currentTime: number,
+  activeZoom: ZoomEffect,
+  previousZoom: ZoomEffect | null
+) => {
+  const TRANSITION_DURATION = 1.0;
+  const transitionProgress = Math.min(
+    (currentTime - activeZoom.time) / TRANSITION_DURATION,
+    1
+  );
+  const easedProgress = easeOutCubic(transitionProgress);
+
+  if (previousZoom) {
+    return {
+      currentZoom: previousZoom.zoomFactor + (activeZoom.zoomFactor - previousZoom.zoomFactor) * easedProgress,
+      currentPosX: previousZoom.positionX + (activeZoom.positionX - previousZoom.positionX) * easedProgress,
+      currentPosY: previousZoom.positionY + (activeZoom.positionY - previousZoom.positionY) * easedProgress
+    };
+  }
+
+  return {
+    currentZoom: 1 + (activeZoom.zoomFactor - 1) * easedProgress,
+    currentPosX: activeZoom.positionX,
+    currentPosY: activeZoom.positionY
+  };
+};
+
+const applyZoomTransform = (
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  zoom: number,
+  posX: number,
+  posY: number
+) => {
+  const scaledWidth = canvas.width * zoom;
+  const scaledHeight = canvas.height * zoom;
+  const offsetX = (canvas.width - scaledWidth) * posX;
+  const offsetY = (canvas.height - scaledHeight) * posY;
+  
+  ctx.translate(offsetX, offsetY);
+  ctx.scale(zoom, zoom);
+};
+
 export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentVideo, setCurrentVideo] = useState<string | null>(null);
-  const [isFFmpegReady, setIsFFmpegReady] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
@@ -141,15 +218,17 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [editingZoomId, setEditingZoomId] = useState<number | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const canvasCtxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const animationFrameRef = useRef<number>();
-
-  // Add FFmpeg.js progress handler
-  ffmpeg.setProgress(({ ratio }) => setProgress(Math.round(ratio * 100)));
+  const { canvasRef, drawFrame } = useVideoCanvas({
+    video: videoRef.current,
+    segment,
+    isPlaying,
+    isAddingZoom,
+    onTimeUpdate: setCurrentTime
+  });
 
   // Initialize single segment when video loads
   useEffect(() => {
@@ -238,97 +317,122 @@ export default function App() {
     }
   };
 
-  const loadFFmpeg = async () => {
-    await ffmpeg.load();
-    setIsFFmpegReady(true);
-  };
-
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     try {
       setIsProcessing(true);
-      
-      if (!isFFmpegReady) {
-        await loadFFmpeg();
-      }
-
-      const inputFileName = 'input.mp4';
-      const outputFileName = 'output.mp4';
-
-      // Just load the video initially - no effects
-      ffmpeg.FS('writeFile', inputFileName, await fetchFile(file));
-      await ffmpeg.run(
-        '-i', inputFileName,
-        '-c', 'copy',
-        '-movflags', '+faststart',
-        outputFileName
-      );
-
-      const data = ffmpeg.FS('readFile', outputFileName);
-      const videoBlob = new Blob([data.buffer], { type: 'video/mp4' });
-      const videoUrl = URL.createObjectURL(videoBlob);
+      const videoUrl = URL.createObjectURL(file);
       setCurrentVideo(videoUrl);
-
-      ffmpeg.FS('unlink', inputFileName);
-      ffmpeg.FS('unlink', outputFileName);
-
     } catch (error) {
-      console.error('Error processing video:', error);
+      console.error('Error loading video:', error);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const processWithZoomEffects = async () => {
+  const processWithWebCodecs = async () => {
     if (!currentVideo || !segment || !canvasRef.current || !videoRef.current) return;
-
+    
     try {
       setIsProcessing(true);
-      
-      // Create media recorder
-      const stream = canvasRef.current.captureStream(60);
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get canvas context');
+
+      // Helper function to apply zoom effects
+      const drawFrameWithEffects = (time: number) => {
+        if (!segment || !ctx || !canvas) return;
+        
+        // Clear previous frame
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Find active zoom effect
+        const activeZoom = segment.zoomEffects
+          .filter(effect => time >= effect.time)
+          .pop();
+
+        ctx.save();
+        if (activeZoom) {
+          const previousZoom = findPreviousZoom(segment.zoomEffects, activeZoom.time);
+          const { currentZoom, currentPosX, currentPosY } = calculateZoomTransition(
+            time,
+            activeZoom,
+            previousZoom
+          );
+          applyZoomTransform(ctx, canvas, currentZoom, currentPosX, currentPosY);
+        }
+        
+        // Draw the frame after applying transform
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      };
+
+      // Create MediaRecorder to handle the encoded chunks
+      const stream = canvas.captureStream();
       const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 8000000
+        mimeType: 'video/webm;codecs=vp8',
+        videoBitsPerSecond: 5_000_000
       });
 
       const chunks: Blob[] = [];
-      
-      // Set up recording handlers
-      mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-      
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'processed_video.webm';
-        a.click();
-        URL.revokeObjectURL(url);
-        setIsProcessing(false);
-      };
-
-      // Start recording
-      mediaRecorder.start();
-
-      // Play video from start to end
-      videoRef.current.currentTime = segment.trimStart;
-      await videoRef.current.play();
-
-      // Stop recording when video reaches end
-      videoRef.current.ontimeupdate = () => {
-        if (videoRef.current && videoRef.current.currentTime >= segment.trimEnd) {
-          videoRef.current.pause();
-          mediaRecorder.stop();
-          videoRef.current.ontimeupdate = null;
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
         }
       };
 
+      mediaRecorder.start(100); // Get chunks every 100ms
+
+      // Type guard for video element
+      const video = videoRef.current;
+      if (!video) throw new Error('Video element not found');
+
+      // Process frames between trimStart and trimEnd
+      for(let time = segment.trimStart; time <= segment.trimEnd; time += 1/30) {
+        video.currentTime = time;
+        await new Promise<void>(r => {
+          if (video.requestVideoFrameCallback) {
+            video.requestVideoFrameCallback(() => r());
+          } else {
+            setTimeout(r, 1000/30);
+          }
+        });
+
+        // Draw frame with effects
+        drawFrameWithEffects(time);
+        
+        const progress = ((time - segment.trimStart) / 
+          (segment.trimEnd - segment.trimStart)) * 100;
+        setExportProgress(Math.round(progress));
+      }
+
+      // Request final data and stop recording
+      mediaRecorder.requestData();
+      mediaRecorder.stop();
+      
+      await new Promise<void>(resolve => {
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'processed_video.webm';
+          a.click();
+          URL.revokeObjectURL(url);
+          
+          // Clean up
+          stream.getTracks().forEach(track => track.stop());
+          resolve();
+        };
+      });
+
     } catch (error) {
-      console.error('Error recording video:', error);
+      console.error('Error processing video:', error);
+    } finally {
       setIsProcessing(false);
+      setExportProgress(0);
     }
   };
 
@@ -369,189 +473,70 @@ export default function App() {
     }
   };
 
-  // Memoize zoom effects sorting
-  const sortedZoomEffects = useMemo(() => {
-    return segment?.zoomEffects.sort((a, b) => a.time - b.time) || [];
-  }, [segment?.zoomEffects]);
-
-  // Debounce seeking handler
-  const handleSeeking = useDebounce(() => {
-    debugLog('Video event: seeking');
-  }, 100);
-
-  // Memoize video event handlers
-  const handleVideoEvent = useCallback((event: string) => {
-    if (event === 'seeking' && !isRecording) {
-      handleSeeking();
-    } else if (event !== 'seeking') { // Only log non-seeking events
-      debugLog(`Video event: ${event}`);
-    }
-  }, [handleSeeking, isRecording]);
-
-  // Move these handlers outside the effect
-  const playHandler = useCallback(() => handleVideoEvent('play'), [handleVideoEvent]);
-  const pauseHandler = useCallback(() => handleVideoEvent('pause'), [handleVideoEvent]);
-  const seekingHandler = useCallback(() => handleVideoEvent('seeking'), [handleVideoEvent]);
-  const waitingHandler = useCallback(() => handleVideoEvent('waiting'), [handleVideoEvent]);
-  const stalledHandler = useCallback(() => handleVideoEvent('stalled'), [handleVideoEvent]);
-
-  // Update canvas effect to use memoized values
-  useEffect(() => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || !segment) return;
-
-    debugLog('Video effect mounted');
-    
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    canvasCtxRef.current = ctx;
-
-    // Set initial canvas size
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-
-    // Single event handler for all video events
-    const handleVideoEvent = (event: string) => {
-      debugLog(`Video event: ${event}`);
-    };
-
-    // Combine all video event listeners
-    const events = ['play', 'pause', 'seeking', 'waiting', 'stalled'];
-    events.forEach(event => video.addEventListener(event, () => handleVideoEvent(event)));
-
-    return () => {
-      events.forEach(event => video.removeEventListener(event, () => handleVideoEvent(event)));
-    };
-  }, [segment]);
-
-  // Update the drawFrame function to run during playback OR when editing zoom
-  const drawFrame = useCallback(() => {
-    const ctx = canvasCtxRef.current;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!ctx || !video || !segment || !canvas) return;
-
-    // Update current time
-    setCurrentTime(video.currentTime);
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.save();
-    
-    // Find active zoom effect
-    const activeZoom = sortedZoomEffects
-      .filter(effect => video.currentTime >= effect.time)
-      .pop();
-
-    if (activeZoom) {
-      // Find the previous zoom effect
-      const previousZoom = sortedZoomEffects
-        .filter(effect => effect.time < activeZoom.time)
-        .pop();
-
-      let currentZoom = activeZoom.zoomFactor;
-      let currentPosX = activeZoom.positionX;
-      let currentPosY = activeZoom.positionY;
-
-      const TRANSITION_DURATION = 1.0;
-      const transitionProgress = Math.min(
-        (video.currentTime - activeZoom.time) / TRANSITION_DURATION,
-        1
-      );
-      
-      const easedProgress = easeOutCubic(transitionProgress);
-
-      if (previousZoom) {
-        currentZoom = previousZoom.zoomFactor + (activeZoom.zoomFactor - previousZoom.zoomFactor) * easedProgress;
-        currentPosX = previousZoom.positionX + (activeZoom.positionX - previousZoom.positionX) * easedProgress;
-        currentPosY = previousZoom.positionY + (activeZoom.positionY - previousZoom.positionY) * easedProgress;
-      } else {
-        currentZoom = 1 + (activeZoom.zoomFactor - 1) * easedProgress;
-        currentPosX = activeZoom.positionX;
-        currentPosY = activeZoom.positionY;
-      }
-
-      const scaledWidth = canvas.width * currentZoom;
-      const scaledHeight = canvas.height * currentZoom;
-      const offsetX = (canvas.width - scaledWidth) * currentPosX;
-      const offsetY = (canvas.height - scaledHeight) * currentPosY;
-      
-      ctx.translate(offsetX, offsetY);
-      ctx.scale(currentZoom, currentZoom);
-    }
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    ctx.restore();
-
-    // Always request next frame while playing or zooming
-    if (isPlaying || isAddingZoom) {
-      animationFrameRef.current = requestAnimationFrame(drawFrame);
-    }
-  }, [segment, sortedZoomEffects, isPlaying, isAddingZoom]);
-
-  // Update the canvas initialization effect to match
-  useEffect(() => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || !segment) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    canvasCtxRef.current = ctx;
-
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 360;
-
-    // Start animation if playing OR editing zoom
-    if (isPlaying || isAddingZoom) {
-      animationFrameRef.current = requestAnimationFrame(drawFrame);
-    } else {
-      drawFrame();
-    }
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [drawFrame, isPlaying, isAddingZoom]);
-
   // Add play/pause control function
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     
+    debugLog(`togglePlay called, current isPlaying: ${isPlaying}`);
     if (isPlaying) {
+      debugLog('Attempting to pause video');
       video.pause();
-      drawFrame();
+      setIsPlaying(false);
     } else {
-      video.play();
+      debugLog('Attempting to play video');
+      video.play()
+        .then(() => {
+          debugLog('Video started playing');
+          setIsPlaying(true);
+        })
+        .catch(error => {
+          debugLog('Error playing video:', error);
+          setIsPlaying(false);
+        });
     }
-    setIsPlaying(!isPlaying);
-  }, [isPlaying, drawFrame]);
+  }, [isPlaying]);
 
   // Add this single effect for play state sync
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
+    // Log video state when play state changes
+    debugLog('Video element state:', {
+      readyState: video.readyState,
+      paused: video.paused,
+      currentTime: video.currentTime,
+      duration: video.duration,
+      src: video.src
+    });
+
     const handlePlayStateChange = (event: Event) => {
-      setIsPlaying(event.type === 'play');
-      if (event.type === 'ended' || event.type === 'pause') {
-        drawFrame(); // Ensure we show the last frame
+      debugLog(`Play state change event: ${event.type}`);
+      if (event.type === 'play') {
+        setIsPlaying(true);
+      } else if (event.type === 'pause' || event.type === 'ended') {
+        setIsPlaying(false);
       }
     };
 
-    ['play', 'pause', 'ended'].forEach(event => 
-      video.addEventListener(event, handlePlayStateChange)
+    const handleError = (error: Event) => {
+      debugLog('Video error:', error);
+      setIsPlaying(false);
+    };
+
+    ['play', 'pause', 'ended', 'seeking'].forEach(event => 
+      video.addEventListener(event, event === 'seeking' ? handleSeeking : handlePlayStateChange)
     );
+    video.addEventListener('error', handleError);
 
     return () => {
-      ['play', 'pause', 'ended'].forEach(event => 
-        video.removeEventListener(event, handlePlayStateChange)
+      ['play', 'pause', 'ended', 'seeking'].forEach(event => 
+        video.removeEventListener(event, event === 'seeking' ? handleSeeking : handlePlayStateChange)
       );
+      video.removeEventListener('error', handleError);
     };
-  }, [drawFrame]);
+  }, [isRecording]);
 
   // Add this effect to handle showing/hiding zoom configuration based on playhead position
   useEffect(() => {
@@ -581,14 +566,7 @@ export default function App() {
     if (!segment || !videoRef.current) return;
     
     // Find the last zoom effect before current time
-    const previousZoom = [...segment.zoomEffects]
-      .sort((a, b) => a.time - b.time)
-      .reduce((current, effect) => {
-        if (videoRef.current && effect.time < videoRef.current.currentTime) {
-          return effect;
-        }
-        return current;
-      }, null);
+    const previousZoom = findPreviousZoom(segment.zoomEffects, videoRef.current.currentTime);
 
     const newZoomEffect: ZoomEffect = {
       time: videoRef.current.currentTime,
@@ -627,6 +605,13 @@ export default function App() {
     zoomEffects: segment?.zoomEffects.length
   });
 
+  // Debounce seeking handler
+  const handleSeeking = () => {
+    if (!isRecording) {
+      debugLog('Video event: seeking');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
       {/* Header */}
@@ -656,7 +641,11 @@ export default function App() {
         {isProcessing && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
             <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536]">
-              <p className="text-lg text-[#d7dadc]">Processing video... {progress}%</p>
+              <p className="text-lg text-[#d7dadc]">
+                {exportProgress > 0 
+                  ? `Exporting video... ${exportProgress}%`
+                  : 'Processing video...'}
+              </p>
             </div>
           </div>
         )}
@@ -748,14 +737,7 @@ export default function App() {
                     {/* Zoom effects - should be above the black overlay */}
                     {segment?.zoomEffects.map((effect, index) => {
                       // Find the previous zoom effect
-                      const previousZoom = [...segment.zoomEffects]
-                        .sort((a, b) => a.time - b.time)
-                        .reduce((current, effect2) => {
-                          if (effect2.time < effect.time) {
-                            return effect2;
-                          }
-                          return current;
-                        }, null);
+                      const previousZoom = findPreviousZoom(segment.zoomEffects, effect.time);
 
                       const fromZoom = previousZoom ? 
                         Math.round((previousZoom.zoomFactor - 1) * 100) : 
@@ -953,7 +935,7 @@ export default function App() {
               {segment && segment.zoomEffects && segment.zoomEffects.length > 0 && (
                 <div className="flex justify-end">
                   <Button
-                    onClick={processWithZoomEffects}
+                    onClick={processWithWebCodecs}
                     disabled={isProcessing}
                     className="bg-[#0079d3] hover:bg-[#1484d6] text-white px-6"
                   >
