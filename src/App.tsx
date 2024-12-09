@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
-import { Play, Pause, Plus, Search, Download } from "lucide-react"
+import { Play, Pause, Plus, Search, Download, Video, StopCircle } from "lucide-react"
+import { exportVideo } from "@/lib/video-exporter"
 
 interface VideoSegment {
   id: string;
@@ -17,7 +18,11 @@ interface ZoomEffect {
   positionY: number;
 }
 
-
+interface ScreenRecorderState {
+  isRecording: boolean;
+  mediaRecorder: MediaRecorder | null;
+  recordedChunks: Blob[];
+}
 
 // Add these easing functions at the top of the file
 const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
@@ -217,6 +222,11 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [editingZoomId, setEditingZoomId] = useState<number | null>(null);
   const [exportProgress, setExportProgress] = useState(0);
+  const [screenRecorder, setScreenRecorder] = useState<ScreenRecorderState>({
+    isRecording: false,
+    mediaRecorder: null,
+    recordedChunks: []
+  });
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -329,102 +339,19 @@ export default function App() {
     }
   };
 
-  const processWithWebCodecs = async () => {
-    if (!currentVideo || !segment || !canvasRef.current || !videoRef.current) return;
+  // Rename the function
+  const handleExport = async () => {
+    if (!currentVideo || !segment || !videoRef.current) return;
     
     try {
       setIsProcessing(true);
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('Could not get canvas context');
-
-      // Helper function to apply zoom effects
-      const drawFrameWithEffects = (time: number) => {
-        if (!segment || !ctx || !canvas) return;
-        
-        // Clear previous frame
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        // Find active zoom effect
-        const activeZoom = segment.zoomEffects
-          .filter(effect => time >= effect.time)
-          .pop();
-
-        ctx.save();
-        if (activeZoom) {
-          const previousZoom = findPreviousZoom(segment.zoomEffects, activeZoom.time);
-          const { currentZoom, currentPosX, currentPosY } = calculateZoomTransition(
-            time,
-            activeZoom,
-            previousZoom
-          );
-          applyZoomTransform(ctx, canvas, currentZoom, currentPosX, currentPosY);
-        }
-        
-        // Draw the frame after applying transform
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        ctx.restore();
-      };
-
-      // Create MediaRecorder to handle the encoded chunks
-      const stream = canvas.captureStream();
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp8',
-        videoBitsPerSecond: 5_000_000
+      await exportVideo({
+        video: videoRef.current,
+        segment,
+        onProgress: setExportProgress,
+        findPreviousZoom,
+        calculateZoomTransition
       });
-
-      const chunks: Blob[] = [];
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunks.push(e.data);
-        }
-      };
-
-      mediaRecorder.start(100); // Get chunks every 100ms
-
-      // Type guard for video element
-      const video = videoRef.current;
-      if (!video) throw new Error('Video element not found');
-
-      // Process frames between trimStart and trimEnd
-      for(let time = segment.trimStart; time <= segment.trimEnd; time += 1/30) {
-        video.currentTime = time;
-        await new Promise<void>(r => {
-          if (video.requestVideoFrameCallback) {
-            video.requestVideoFrameCallback(() => r());
-          } else {
-            setTimeout(r, 1000/30);
-          }
-        });
-
-        // Draw frame with effects
-        drawFrameWithEffects(time);
-        
-        const progress = ((time - segment.trimStart) / 
-          (segment.trimEnd - segment.trimStart)) * 100;
-        setExportProgress(Math.round(progress));
-      }
-
-      // Request final data and stop recording
-      mediaRecorder.requestData();
-      mediaRecorder.stop();
-      
-      await new Promise<void>(resolve => {
-        mediaRecorder.onstop = () => {
-          const blob = new Blob(chunks, { type: 'video/webm' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = 'processed_video.webm';
-          a.click();
-          URL.revokeObjectURL(url);
-          
-          // Clean up
-          stream.getTracks().forEach(track => track.stop());
-          resolve();
-        };
-      });
-
     } catch (error) {
       console.error('Error processing video:', error);
     } finally {
@@ -605,6 +532,115 @@ export default function App() {
     debugLog('Video event: seeking');
   };
 
+  const handleScreenRecording = async () => {
+    if (screenRecorder.isRecording) {
+      // Stop recording
+      screenRecorder.mediaRecorder?.stop();
+      setScreenRecorder(prev => ({ ...prev, isRecording: false }));
+      return;
+    }
+
+    try {
+      // Request screen capture
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          displaySurface: "monitor",
+          frameRate: 30
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true
+        }
+      });
+
+      // Create MediaRecorder with more specific MIME type
+      const mimeType = 'video/webm;codecs=vp8,opus';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        throw new Error('Unsupported MIME type');
+      }
+
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 2500000 // 2.5 Mbps
+      });
+
+      const chunks: Blob[] = []; // Create local chunks array
+
+      // Handle data available event
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+
+      // Handle recording stop
+      mediaRecorder.onstop = async () => {
+        debugLog('Recording stopped, processing chunks...');
+        
+        const blob = new Blob(chunks, { type: mimeType });
+        const videoUrl = URL.createObjectURL(blob);
+        
+        // Wait for video metadata to load before setting up the player
+        await new Promise<void>((resolve) => {
+          const tempVideo = document.createElement('video');
+          tempVideo.preload = "metadata";
+          
+          tempVideo.onloadedmetadata = () => {
+            debugLog('Video metadata loaded', {
+              duration: tempVideo.duration,
+              videoWidth: tempVideo.videoWidth,
+              videoHeight: tempVideo.videoHeight
+            });
+            
+            if (tempVideo.duration === Infinity) {
+              debugLog('Warning: Video duration is Infinity, calculating from chunks...');
+              // Estimate duration from chunks if metadata reports Infinity
+              const estimatedDuration = chunks.reduce((total, chunk) => total + chunk.size / 250000, 0);
+              setDuration(estimatedDuration);
+            } else {
+              setDuration(tempVideo.duration);
+            }
+            
+            setCurrentVideo(videoUrl);
+            
+            // Initialize video element
+            if (videoRef.current) {
+              videoRef.current.src = videoUrl;
+              videoRef.current.preload = "metadata";
+              videoRef.current.load();
+            }
+            
+            resolve();
+          };
+          
+          tempVideo.src = videoUrl;
+        });
+
+        // Reset recorder state
+        setScreenRecorder({
+          isRecording: false,
+          mediaRecorder: null,
+          recordedChunks: []
+        });
+
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      // Start recording
+      mediaRecorder.start(100);
+      setScreenRecorder({
+        isRecording: true,
+        mediaRecorder,
+        recordedChunks: []
+      });
+
+    } catch (error) {
+      console.error('Error starting screen recording:', error);
+      setScreenRecorder(prev => ({ ...prev, isRecording: false }));
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
       {/* Header */}
@@ -615,20 +651,42 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* File Upload Section */}
-        <div className="mb-6">
+        {/* Add this new section before the file upload */}
+        <div className="flex gap-4 mb-6">
           <input
             type="file"
             accept="video/*"
             onChange={handleFileUpload}
-            disabled={isProcessing}
-            className="block w-full text-sm text-[#d7dadc]
+            disabled={isProcessing || screenRecorder.isRecording}
+            className="block flex-1 text-sm text-[#d7dadc]
               file:mr-4 file:py-2 file:px-4
               file:rounded-full file:border-0
               file:text-sm file:font-semibold
               file:bg-[#0079d3] file:text-white
               hover:file:bg-[#1484d6]"
           />
+          
+          <Button
+            onClick={handleScreenRecording}
+            disabled={isProcessing}
+            className={`${
+              screenRecorder.isRecording 
+                ? 'bg-red-500 hover:bg-red-600' 
+                : 'bg-[#0079d3] hover:bg-[#1484d6]'
+            } text-white`}
+          >
+            {screenRecorder.isRecording ? (
+              <>
+                <StopCircle className="w-4 h-4 mr-2" />
+                Stop Recording
+              </>
+            ) : (
+              <>
+                <Video className="w-4 h-4 mr-2" />
+                Record Screen
+              </>
+            )}
+          </Button>
         </div>
 
         {isProcessing && (
@@ -653,8 +711,30 @@ export default function App() {
                   src={currentVideo}
                   className="hidden"
                   playsInline
+                  preload="metadata"
                   onLoadedMetadata={(e) => {
-                    setDuration(e.currentTarget.duration);
+                    const video = e.currentTarget;
+                    debugLog('Video loaded metadata', {
+                      duration: video.duration,
+                      width: video.videoWidth,
+                      height: video.videoHeight
+                    });
+                    
+                    if (video.duration === Infinity) {
+                      debugLog('Warning: Video duration is Infinity in player, using existing duration');
+                    } else {
+                      setDuration(video.duration);
+                    }
+                  }}
+                  onError={(e) => {
+                    debugLog('Video error:', e.currentTarget.error);
+                  }}
+                  onDurationChange={(e) => {
+                    const newDuration = e.currentTarget.duration;
+                    debugLog('Duration changed:', newDuration);
+                    if (newDuration !== Infinity) {
+                      setDuration(newDuration);
+                    }
                   }}
                 />
                 <canvas 
@@ -928,7 +1008,7 @@ export default function App() {
               {segment && segment.zoomEffects && segment.zoomEffects.length > 0 && (
                 <div className="flex justify-end">
                   <Button
-                    onClick={processWithWebCodecs}
+                    onClick={handleExport}
                     disabled={isProcessing}
                     className="bg-[#0079d3] hover:bg-[#1484d6] text-white px-6"
                   >
@@ -947,6 +1027,9 @@ export default function App() {
 
 // Helper function to format time in MM:SS format
 function formatTime(seconds: number): string {
+  if (!isFinite(seconds) || isNaN(seconds)) {
+    return '0:00';
+  }
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.floor(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
