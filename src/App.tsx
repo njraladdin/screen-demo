@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
+import { exportVideo } from "@/lib/video-exporter";
 
 let lastFrameTime = performance.now();
 
@@ -48,6 +49,8 @@ function App() {
   const [sortedZoomEffects, setSortedZoomEffects] = useState<ZoomEffect[]>([]);
   const animationFrameRef = useRef<number>();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [currentVideo, setCurrentVideo] = useState<string | null>(null);
+  const [exportProgress, setExportProgress] = useState(0);
   
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -161,8 +164,24 @@ function App() {
     };
 
     const handleTimeUpdate = () => {
-      if (!isSeeking) {
+      if (!isSeeking && segment) {
         setCurrentTime(video.currentTime);
+        
+        // Find if we're in any zoom effect's range
+        const activeZoomIndex = segment.zoomEffects.findIndex(effect => 
+          video.currentTime >= effect.time && 
+          video.currentTime <= (effect.time + effect.duration)
+        );
+
+        // Update zoom configuration visibility
+        if (activeZoomIndex !== -1) {
+          setIsAddingZoom(true);
+          setEditingZoomId(activeZoomIndex);
+          setZoomFactor(segment.zoomEffects[activeZoomIndex].zoomFactor);
+        } else {
+          setIsAddingZoom(false);
+          setEditingZoomId(null);
+        }
       }
     };
 
@@ -183,7 +202,7 @@ function App() {
       video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('seeked', handleSeeked);
     };
-  }, [drawFrame, isSeeking]);
+  }, [drawFrame, isSeeking, segment]);
 
   async function handleStartRecording() {
     if (isRecording) return;
@@ -213,6 +232,7 @@ function App() {
       
       // Create object URL and set video source
       const url = URL.createObjectURL(blob);
+      setCurrentVideo(url);
       if (videoRef.current) {
         videoRef.current.src = url;
         videoRef.current.load();
@@ -576,57 +596,72 @@ function App() {
     setCurrentTime(time);
   }, 32); // Increase throttle time slightly
 
+  const handleExport = async () => {
+    if (!currentVideo || !segment || !videoRef.current) return;
+    
+    try {
+      setIsProcessing(true);
+      await exportVideo({
+        video: videoRef.current,
+        segment,
+        onProgress: setExportProgress,
+        findPreviousZoom,
+        calculateZoomTransition
+      });
+    } catch (error) {
+      console.error('Error processing video:', error);
+    } finally {
+      setIsProcessing(false);
+      setExportProgress(0);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-[#1a1a1b]">
       {/* Header */}
-      <header className="border-b border-border">
+      <header className="bg-[#1a1a1b] border-b border-[#343536]">
         <div className="max-w-6xl mx-auto px-4 py-4">
-          <h1 className="text-2xl font-bold">Screen Demo</h1>
+          <h1 className="text-2xl font-bold text-[#d7dadc]">Video Editor</h1>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
         {/* Controls */}
-        <div className="flex gap-4 mb-6">
-          <button
-            onClick={isRecording ? handleStopRecording : handleStartRecording}
-            disabled={false}
-            className={`flex items-center px-4 py-2 rounded-md text-white transition-colors
-              ${isRecording 
-                ? 'bg-red-500 hover:bg-red-600' 
-                : 'bg-primary hover:bg-primary/90'
-              }`}
-          >
-            {isRecording ? (
-              <>
-                <StopCircle className="w-4 h-4 mr-2" />
-                Stop Recording
-              </>
-            ) : (
-              <>
-                <Video className="w-4 h-4 mr-2" />
-                Start Recording
-              </>
-            )}
-          </button>
-          
-          {videoRef.current && (
+        <div className="flex justify-between items-center gap-4 mb-6">
+          <div className="flex gap-4">
             <button
-              onClick={togglePlayPause}
-              className="flex items-center px-4 py-2 rounded-md bg-primary hover:bg-primary/90 text-white transition-colors"
+              onClick={isRecording ? handleStopRecording : handleStartRecording}
+              disabled={isProcessing}
+              className={`flex items-center px-4 py-2 rounded-md text-white transition-colors
+                ${isRecording 
+                  ? 'bg-red-500 hover:bg-red-600' 
+                  : 'bg-[#0079d3] hover:bg-[#1484d6]'
+                }`}
             >
-              {isPlaying ? (
+              {isRecording ? (
                 <>
-                  <Pause className="w-4 h-4 mr-2" />
-                  Pause
+                  <StopCircle className="w-4 h-4 mr-2" />
+                  Stop Recording
                 </>
               ) : (
                 <>
-                  <Play className="w-4 h-4 mr-2" />
-                  Play
+                  <Video className="w-4 h-4 mr-2" />
+                  Start Recording
                 </>
               )}
             </button>
+          </div>
+
+          {/* Export Button - Now in the controls section */}
+          {segment && segment.zoomEffects && segment.zoomEffects.length > 0 && (
+            <Button
+              onClick={handleExport}
+              disabled={isProcessing}
+              className="bg-[#0079d3] hover:bg-[#1484d6] text-white px-6"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Export Video with Effects
+            </Button>
           )}
         </div>
 
@@ -635,84 +670,60 @@ function App() {
         )}
         
         {isRecording && (
-          <p className="text-primary mb-4">Recording in progress...</p>
+          <p className="text-[#0079d3] mb-4">Recording in progress...</p>
         )}
 
-        <div className="space-y-4">
-          {/* Hidden video element */}
-          <video 
-            ref={videoRef}
-            className="hidden"
-            playsInline
-            preload="auto"
-            crossOrigin="anonymous"
-            style={{ width: '100%', height: '100%' }}
-            onLoadStart={() => debugLog('Video: loadstart event')}
-            onLoadedMetadata={(e) => {
-              debugLog('Video: loadedmetadata event', {
-                duration: e.currentTarget.duration,
-                size: `${e.currentTarget.videoWidth}x${e.currentTarget.videoHeight}`,
-                readyState: e.currentTarget.readyState
-              });
-            }}
-            onLoadedData={() => debugLog('Video: loadeddata event')}
-            onCanPlay={() => {
-              debugLog('Video: canplay event', {
-                readyState: videoRef.current?.readyState,
-                paused: videoRef.current?.paused
-              });
-              drawFrame();
-            }}
-            onPlay={() => {
-              debugLog('Video: play event triggered');
-              drawFrame();
-            }}
-            onPlaying={() => debugLog('Video: playing event')}
-            onWaiting={() => debugLog('Video: waiting for data')}
-            onStalled={() => debugLog('Video: stalled')}
-            onSeeking={() => debugLog('Video: seeking')}
-            onSeeked={() => {
-              debugLog('Video: seeked');
-              drawFrame();
-            }}
-            onTimeUpdate={() => {
-              debugLog('Video: timeupdate', {
-                currentTime: videoRef.current?.currentTime,
-                paused: videoRef.current?.paused
-              });
-            }}
-            onError={(e) => {
-              const video = e.currentTarget;
-              debugLog('Video: error', {
-                error: video.error?.message,
-                code: video.error?.code,
-                networkState: video.networkState
-              });
-            }}
-          />
-          
-          {/* Canvas */}
-          <div className="bg-black rounded-lg overflow-hidden">
-            <canvas 
-              ref={canvasRef}
-              className="w-full h-full"
-              style={{ imageRendering: 'crisp-edges' as const }}
-            />
-          </div>
-
-          {/* Zoom Configuration Panel */}
+        <div className="space-y-6">
+          {/* Video Preview and Zoom Configuration Side by Side */}
           <div className="grid grid-cols-3 gap-6">
-            <div className="col-span-2">
-              {/* Canvas stays here */}
+            {/* Video Preview Section - Takes up 2/3 of the space */}
+            <div className="col-span-2 bg-black rounded-lg p-4">
+              <div className="aspect-video relative overflow-hidden rounded-lg">
+                {/* Hidden video element */}
+                <video 
+                  ref={videoRef}
+                  className="hidden"
+                  playsInline
+                  preload="auto"
+                  crossOrigin="anonymous"
+                />
+                
+                {/* Canvas */}
+                <canvas 
+                  ref={canvasRef}
+                  className="w-full h-full"
+                  style={{ imageRendering: 'crisp-edges' }}
+                />
+                
+                {/* Playback Controls */}
+                <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 bg-black/30 rounded-full p-2 backdrop-blur-sm">
+                  <Button
+                    onClick={togglePlayPause}
+                    disabled={isProcessing}
+                    variant="ghost"
+                    className="text-white hover:bg-white/20 hover:text-white transition-colors"
+                  >
+                    {isPlaying ? (
+                      <Pause className="w-6 h-6" />
+                    ) : (
+                      <Play className="w-6 h-6" />
+                    )}
+                  </Button>
+                  <div className="text-white/90 px-2 flex items-center">
+                    {formatTime(currentTime)} / {formatTime(duration)}
+                  </div>
+                </div>
+              </div>
             </div>
-            
+
+            {/* Zoom Configuration Panel */}
             <div className="col-span-1">
-              {(isAddingZoom || isInAnyZoomRange()) ? (
-                <div className="bg-muted rounded-lg border border-border p-6">
+              {(isAddingZoom || editingZoomId !== null) ? (
+                <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6">
                   <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-lg font-semibold">Zoom Configuration</h2>
+                    <h2 className="text-lg font-semibold text-[#d7dadc]">Zoom Configuration</h2>
                     {editingZoomId !== null && (
-                      <button
+                      <Button
                         onClick={() => {
                           if (segment && editingZoomId !== null) {
                             setSegment({
@@ -723,17 +734,19 @@ function App() {
                             setEditingZoomId(null);
                           }
                         }}
-                        className="text-destructive hover:text-destructive/90 transition-colors"
+                        variant="ghost"
+                        size="icon"
+                        className="text-white"
                       >
                         <Trash2 className="w-5 h-5" />
-                      </button>
+                      </Button>
                     )}
                   </div>
 
                   <div className="space-y-6">
                     {/* Zoom Factor Control */}
                     <div>
-                      <label className="block text-sm font-medium mb-2">
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2">
                         Zoom Factor
                       </label>
                       <div className="space-y-2">
@@ -747,15 +760,10 @@ function App() {
                             const newValue = Number(e.target.value);
                             setZoomFactor(newValue);
                             handleZoomChange(newValue);
-                            
-                            if (editingZoomId !== null && segment) {
-                              const zoomEffect = segment.zoomEffects[editingZoomId];
-                              throttledSeek(zoomEffect.time + zoomEffect.duration);
-                            }
                           }}
-                          className="w-full"
+                          className="w-full accent-[#0079d3]"
                         />
-                        <div className="flex justify-between text-sm text-muted-foreground">
+                        <div className="flex justify-between text-sm text-[#818384]">
                           <span>No zoom</span>
                           <span>{Math.round((zoomFactor - 1) * 100)}%</span>
                           <span>200%</span>
@@ -766,7 +774,7 @@ function App() {
                     {/* Position Controls */}
                     <div className="space-y-4">
                       <div>
-                        <label className="block text-sm font-medium mb-2">
+                        <label className="block text-sm font-medium text-[#d7dadc] mb-2">
                           Horizontal Position
                         </label>
                         <input
@@ -777,18 +785,13 @@ function App() {
                           value={segment?.zoomEffects[editingZoomId!]?.positionX ?? 0.5}
                           onChange={(e) => {
                             handleZoomChange(zoomFactor, Number(e.target.value), undefined);
-                            
-                            if (editingZoomId !== null && segment) {
-                              const zoomEffect = segment.zoomEffects[editingZoomId];
-                              throttledSeek(zoomEffect.time + zoomEffect.duration);
-                            }
                           }}
-                          className="w-full"
+                          className="w-full accent-[#0079d3]"
                         />
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium mb-2">
+                        <label className="block text-sm font-medium text-[#d7dadc] mb-2">
                           Vertical Position
                         </label>
                         <input
@@ -799,25 +802,20 @@ function App() {
                           value={segment?.zoomEffects[editingZoomId!]?.positionY ?? 0.5}
                           onChange={(e) => {
                             handleZoomChange(zoomFactor, undefined, Number(e.target.value));
-                            
-                            if (editingZoomId !== null && segment) {
-                              const zoomEffect = segment.zoomEffects[editingZoomId];
-                              throttledSeek(zoomEffect.time + zoomEffect.duration);
-                            }
                           }}
-                          className="w-full"
+                          className="w-full accent-[#0079d3]"
                         />
                       </div>
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="bg-muted rounded-lg border border-border p-8 h-full flex flex-col items-center justify-center text-center">
-                  <div className="bg-background rounded-full p-3 mb-3">
-                    <Search className="w-6 h-6 text-muted-foreground" />
+                <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-8 h-full flex flex-col items-center justify-center text-center">
+                  <div className="bg-[#272729] rounded-full p-3 mb-3">
+                    <Search className="w-6 h-6 text-[#818384]" />
                   </div>
-                  <p className="font-medium">No Zoom Effect Selected</p>
-                  <p className="text-muted-foreground text-sm mt-1">
+                  <p className="text-[#d7dadc] font-medium">No Zoom Effect Selected</p>
+                  <p className="text-[#818384] text-sm mt-1">
                     Select a zoom effect on the timeline or add a new one to configure
                   </p>
                 </div>
@@ -825,20 +823,19 @@ function App() {
             </div>
           </div>
 
-          {/* Timeline */}
-          {duration > 0 && (
-            <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6">
-              <div className="flex justify-between items-center mb-8">
-                <h2 className="text-lg font-semibold text-[#d7dadc]">Timeline</h2>
-                <Button 
-                  onClick={handleAddZoom}
-                  disabled={isProcessing}
-                  className="flex items-center px-4 py-2 rounded-md bg-[#0079d3] hover:bg-[#1484d6] text-white transition-colors"
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Zoom at Playhead
-                </Button>
-              </div>
+          {/* Timeline Section */}
+          <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6">
+            <div className="flex justify-between items-center mb-8">
+              <h2 className="text-lg font-semibold text-[#d7dadc]">Timeline</h2>
+              <Button 
+                onClick={handleAddZoom}
+                disabled={isProcessing}
+                className="bg-[#0079d3] hover:bg-[#1484d6] text-white"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add Zoom at Playhead
+              </Button>
+            </div>
 
               <div className="relative h-32">
                 {/* Timeline markers */}
@@ -987,9 +984,21 @@ function App() {
                 </div>
               </div>
             </div>
-          )}
+         
         </div>
       </main>
+
+      {isProcessing && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536]">
+            <p className="text-lg text-[#d7dadc]">
+              {exportProgress > 0 
+                ? `Exporting video... ${Math.round(exportProgress)}%`
+                : 'Processing video...'}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
