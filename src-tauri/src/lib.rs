@@ -139,14 +139,14 @@ async fn stop_recording() -> Result<Vec<u8>, String> {
         return Err("Not recording".to_string());
     }
 
+    // Immediately update recording state to false
+    RECORDING.store(false, Ordering::SeqCst);
+
     // Signal capture to stop
     SHOULD_STOP.store(true, Ordering::SeqCst);
     
     // Wait a bit for encoder to finish
     thread::sleep(std::time::Duration::from_millis(100));
-    
-    // Update recording state
-    RECORDING.store(false, Ordering::SeqCst);
     
     // Read and return the video file
     unsafe {
