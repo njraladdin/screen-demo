@@ -41,6 +41,24 @@ const useThrottle = (callback: Function, limit: number) => {
   }, [callback, limit]);
 };
 
+// Add new interface for mouse positions
+interface MousePosition {
+  x: number;
+  y: number;
+  timestamp: number;
+}
+
+// Add new interface
+interface MonitorInfo {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  is_primary: boolean;
+}
+
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +109,14 @@ function App() {
 
   // Add at the top of your component
   const tempCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+
+  // Add to your App component state
+  const [mousePositions, setMousePositions] = useState<MousePosition[]>([]);
+
+  // Add new state
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [showMonitorSelect, setShowMonitorSelect] = useState(false);
+  const [selectedMonitorId, setSelectedMonitorId] = useState<string | null>(null);
 
   // First, update the drawFrame signature to handle export mode
   const drawFrame = useCallback(async (exportMode = false) => {
@@ -191,13 +217,60 @@ function App() {
       // Draw the temporary canvas onto the main canvas
       ctx.drawImage(tempCanvas, 0, 0);
 
+      // After drawing the video frame, draw the current mouse position only
+      if (mousePositions.length > 0 && ctx) {
+        const currentVideoTime = video.currentTime;
+        
+        // Find the closest mouse position that's not ahead of current time
+        const currentPosition = mousePositions
+          .filter(pos => pos.timestamp <= currentVideoTime)
+          .sort((a, b) => b.timestamp - a.timestamp)[0];
+
+        if (currentPosition) {
+          // Calculate position relative to the actual video area
+          const scale = backgroundConfig.scale / 100;
+          const scaledWidth = canvas.width * scale;
+          const scaledHeight = canvas.height * scale;
+          const offsetX = (canvas.width - scaledWidth) / 2;
+          const offsetY = (canvas.height - scaledHeight) / 2;
+          
+          // Scale coordinates to match the actual video size and position
+          const cursorX = offsetX + (currentPosition.x / screen.width) * scaledWidth;
+          const cursorY = offsetY + (currentPosition.y / screen.height) * scaledHeight;
+
+          ctx.save();
+          ctx.translate(cursorX, cursorY);
+          
+          // Make cursor much bigger (e.g., 5x bigger)
+          ctx.scale(5, 5);
+
+          // White outline
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(0, 0);
+          ctx.lineTo(0, 12);
+          ctx.moveTo(0, 0);
+          ctx.lineTo(8, 8);
+          ctx.stroke();
+          
+          // Black line
+          ctx.strokeStyle = 'black';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          
+          ctx.restore();
+        }
+      }
+
+      // Only request next frame if video is playing
       if (!exportMode && !video.paused) {
         animationFrameRef.current = requestAnimationFrame(frameRequestCallback);
       }
     } finally {
       isDrawingRef.current = false;
     }
-  }, [currentTime, segment, backgroundConfig]);
+  }, [currentTime, segment, backgroundConfig, mousePositions]);
 
   // Add this after drawFrame
   const frameRequestCallback = useCallback((_time: number) => {
@@ -210,8 +283,9 @@ function App() {
     if (!video) return;
 
     const animate = () => {
-      drawFrame();
+      // Only draw frame if video is playing
       if (!video.paused) {
+        drawFrame();
         animationFrameRef.current = requestAnimationFrame(animate);
       }
     };
@@ -295,20 +369,23 @@ function App() {
   async function handleStartRecording() {
     if (isRecording) return;
 
-    // If we already have a video, show confirmation first
     if (currentVideo) {
       setShowConfirmNewRecording(true);
       return;
     }
 
-    // Otherwise start recording directly
+    if (!selectedMonitorId) {
+      await getMonitors();
+      return;
+    }
+
     await startNewRecording();
   }
 
   // Separate the actual recording logic
   async function startNewRecording() {
     try {
-      await invoke("start_recording");
+      await invoke("start_recording", { monitorId: selectedMonitorId });
       setIsRecording(true);
       setError(null);
       
@@ -355,7 +432,11 @@ function App() {
       setIsRecording(false);
       setIsLoadingVideo(true);
       
-      const videoData = await invoke<number[]>("stop_recording");
+      // Update to receive both video data and mouse positions
+      const [videoData, mouseData] = await invoke<[number[], MousePosition[]]>("stop_recording");
+      
+      console.log(`Received ${mouseData.length} mouse positions`);
+      setMousePositions(mouseData);
       
       const uint8Array = new Uint8Array(videoData);
       const blob = new Blob([uint8Array], { 
@@ -368,9 +449,8 @@ function App() {
       if (videoRef.current) {
         videoRef.current.src = url;
         videoRef.current.load();
-        // Just play the video - no need to pause
         await videoRef.current.play();
-        setIsPlaying(true); // Update playing state
+        setIsPlaying(true);
       }
       
     } catch (err) {
@@ -837,6 +917,22 @@ function App() {
       }
     };
   }, [isRecording]);
+
+  // Add function to get monitors
+  const getMonitors = async () => {
+    try {
+      const availableMonitors = await invoke<MonitorInfo[]>("get_monitors");
+      setMonitors(availableMonitors);
+      if (availableMonitors.length === 1) {
+        setSelectedMonitorId(availableMonitors[0].id);
+      } else {
+        setShowMonitorSelect(true);
+      }
+    } catch (err) {
+      console.error("Failed to get monitors:", err);
+      setError(err as string);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
@@ -1396,6 +1492,38 @@ function App() {
               >
                 Start New Recording
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Monitor Selection Modal */}
+      {showMonitorSelect && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536] max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-[#d7dadc] mb-4">
+              Select Monitor to Record
+            </h3>
+            <div className="grid gap-3">
+              {monitors.map(monitor => (
+                <button
+                  key={monitor.id}
+                  onClick={() => {
+                    setSelectedMonitorId(monitor.id);
+                    setShowMonitorSelect(false);
+                    startNewRecording();
+                  }}
+                  className="p-4 border border-[#343536] rounded-lg hover:bg-[#272729] text-left"
+                >
+                  <div className="font-medium text-[#d7dadc]">
+                    {monitor.name || `Monitor ${monitor.id}`}
+                    {monitor.is_primary && " (Primary)"}
+                  </div>
+                  <div className="text-sm text-[#818384]">
+                    {monitor.width}x{monitor.height}
+                  </div>
+                </button>
+              ))}
             </div>
           </div>
         </div>
