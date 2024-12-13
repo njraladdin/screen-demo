@@ -1,2 +1,3 @@
 1- add mouse tracking and overlay feature 
 2- add automatic mouse zoom feature 
+3- export video with background and mouse 

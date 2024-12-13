@@ -14,6 +14,11 @@ interface ExportOptions {
   onProgress: (progress: number) => void;
   findPreviousZoom: (effects: any[], currentTime: number) => any;
   calculateZoomTransition: (time: number, activeZoom: any, previousZoom: any) => any;
+  backgroundConfig: {
+    scale: number;
+    borderRadius: number;
+    backgroundType: 'solid' | 'gradient1' | 'gradient2' | 'gradient3';
+  };
 }
 
 export async function exportVideo({
@@ -21,7 +26,8 @@ export async function exportVideo({
   segment,
   onProgress,
   findPreviousZoom,
-  calculateZoomTransition
+  calculateZoomTransition,
+  backgroundConfig
 }: ExportOptions): Promise<void> {
   // Create a high-resolution canvas for the output
   const outputCanvas = document.createElement('canvas');
@@ -54,7 +60,6 @@ export async function exportVideo({
     throw new Error('No supported video codec found');
   }
 
-  // Create and configure MediaRecorder
   const mediaRecorder = new MediaRecorder(stream, {
     mimeType: supportedMimeType,
     videoBitsPerSecond: 20000000,
@@ -68,7 +73,6 @@ export async function exportVideo({
     }
   };
 
-  // Create a promise that resolves when recording is complete
   const exportComplete = new Promise<void>((resolve) => {
     mediaRecorder.onstop = () => {
       const blob = new Blob(chunks, { type: supportedMimeType });
@@ -93,14 +97,69 @@ export async function exportVideo({
   const totalFrames = Math.ceil((segment.trimEnd - segment.trimStart) * frameRate);
   let processedFrames = 0;
 
+  // Helper function to generate background gradient
+  const getBackgroundStyle = (ctx: CanvasRenderingContext2D, type: string) => {
+    switch (type) {
+      case 'gradient1':
+        const gradient1 = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient1.addColorStop(0, '#2563eb');
+        gradient1.addColorStop(1, '#7c3aed');
+        return gradient1;
+      case 'gradient2':
+        const gradient2 = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient2.addColorStop(0, '#fb7185');
+        gradient2.addColorStop(1, '#fdba74');
+        return gradient2;
+      case 'gradient3':
+        const gradient3 = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient3.addColorStop(0, '#10b981');
+        gradient3.addColorStop(1, '#2dd4bf');
+        return gradient3;
+      default:
+        return '#000000';
+    }
+  };
+
   const processFrame = async (time: number) => {
     video.currentTime = time;
     await new Promise<void>(resolve => {
       video.onseeked = () => resolve();
     });
 
-    ctx.fillStyle = '#000000';
+    // Draw background
+    ctx.fillStyle = getBackgroundStyle(ctx, backgroundConfig.backgroundType);
     ctx.fillRect(0, 0, outputCanvas.width, outputCanvas.height);
+
+    // Calculate scaled dimensions
+    const scale = backgroundConfig.scale / 100;
+    const scaledWidth = outputCanvas.width * scale;
+    const scaledHeight = outputCanvas.height * scale;
+    const x = (outputCanvas.width - scaledWidth) / 2;
+    const y = (outputCanvas.height - scaledHeight) / 2;
+
+    // Create temporary canvas for rounded corners
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = outputCanvas.width;
+    tempCanvas.height = outputCanvas.height;
+    const tempCtx = tempCanvas.getContext('2d')!;
+
+    // Draw rounded rectangle path
+    const radius = backgroundConfig.borderRadius;
+    tempCtx.beginPath();
+    tempCtx.moveTo(x + radius, y);
+    tempCtx.lineTo(x + scaledWidth - radius, y);
+    tempCtx.quadraticCurveTo(x + scaledWidth, y, x + scaledWidth, y + radius);
+    tempCtx.lineTo(x + scaledWidth, y + scaledHeight - radius);
+    tempCtx.quadraticCurveTo(x + scaledWidth, y + scaledHeight, x + scaledWidth - radius, y + scaledHeight);
+    tempCtx.lineTo(x + radius, y + scaledHeight);
+    tempCtx.quadraticCurveTo(x, y + scaledHeight, x, y + scaledHeight - radius);
+    tempCtx.lineTo(x, y + radius);
+    tempCtx.quadraticCurveTo(x, y, x + radius, y);
+    tempCtx.closePath();
+
+    // Apply clipping and draw video frame
+    tempCtx.save();
+    tempCtx.clip();
     
     const activeZoom = segment.zoomEffects
       .filter(effect => time >= effect.time)
@@ -114,21 +173,24 @@ export async function exportVideo({
         previousZoom
       );
 
-      ctx.save();
-      (ctx as any).filter = 'url(#interpolate)';
+      tempCtx.save();
+      const zoomedWidth = scaledWidth * currentZoom;
+      const zoomedHeight = scaledHeight * currentZoom;
+      const zoomOffsetX = (scaledWidth - zoomedWidth) * currentPosX;
+      const zoomOffsetY = (scaledHeight - zoomedHeight) * currentPosY;
       
-      const scaledWidth = outputCanvas.width * currentZoom;
-      const scaledHeight = outputCanvas.height * currentZoom;
-      const offsetX = (outputCanvas.width - scaledWidth) * currentPosX;
-      const offsetY = (outputCanvas.height - scaledHeight) * currentPosY;
-      
-      ctx.translate(offsetX, offsetY);
-      ctx.scale(currentZoom, currentZoom);
-      ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
-      ctx.restore();
+      tempCtx.translate(x + zoomOffsetX, y + zoomOffsetY);
+      tempCtx.scale(currentZoom * scale, currentZoom * scale);
+      tempCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+      tempCtx.restore();
     } else {
-      ctx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+      tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
     }
+
+    tempCtx.restore();
+
+    // Draw the temporary canvas onto the main canvas
+    ctx.drawImage(tempCanvas, 0, 0);
 
     processedFrames++;
     onProgress((processedFrames / totalFrames) * 100);

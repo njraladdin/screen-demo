@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
-import { exportVideo } from "@/lib/video-exporter";
+
 
 let lastFrameTime = performance.now();
 
@@ -89,68 +89,120 @@ function App() {
     gradient3: 'bg-gradient-to-r from-emerald-500 to-teal-400'
   };
 
-  // Draw the current frame on canvas
-  const drawFrame = useCallback(() => {
+  // Add at the top of your component
+  const tempCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+
+  // First, update the drawFrame signature to handle export mode
+  const drawFrame = useCallback(async (exportMode = false, onExportProgress?: (progress: number) => void) => {
     if (isDrawingRef.current) return;
     
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !segment) return;
 
+    // Make sure video is ready
+    if (video.readyState < 2) {  // HAVE_CURRENT_DATA
+      if (!exportMode) {
+        requestAnimationFrame(drawFrame);
+      }
+      return;
+    }
+
     const ctx = canvas.getContext('2d');
+    
     if (!ctx) return;
 
     isDrawingRef.current = true;
 
     try {
-      const now = performance.now();
-      const timeSinceLastFrame = now - lastFrameTime;
-      if (timeSinceLastFrame < 16) {
-        animationFrameRef.current = requestAnimationFrame(drawFrame);
-        return;
-      }
-      lastFrameTime = now;
-
-      // Update canvas dimensions to match video
-      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+      // Skip frame rate limiting during export
+      if (!exportMode) {
+        const now = performance.now();
+        const timeSinceLastFrame = now - lastFrameTime;
+        if (timeSinceLastFrame < 8) {
+          animationFrameRef.current = requestAnimationFrame(drawFrame);
+          return;
+        }
+        lastFrameTime = now;
       }
 
+      // Set canvas size to match video
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+
+      // Draw background
+      ctx.fillStyle = getBackgroundStyle(ctx, backgroundConfig.backgroundType);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Calculate scaled dimensions
+      const scale = backgroundConfig.scale / 100;
+      const scaledWidth = canvas.width * scale;
+      const scaledHeight = canvas.height * scale;
+      const x = (canvas.width - scaledWidth) / 2;
+      const y = (canvas.height - scaledHeight) / 2;
+
+      // Create temporary canvas for rounded corners
+      const tempCanvas = tempCanvasRef.current;
+      tempCanvas.width = canvas.width;
+      tempCanvas.height = canvas.height;
+      const tempCtx = tempCanvas.getContext('2d')!;
+
+      // Draw rounded rectangle path
+      const radius = backgroundConfig.borderRadius;
+      tempCtx.beginPath();
+      tempCtx.moveTo(x + radius, y);
+      tempCtx.lineTo(x + scaledWidth - radius, y);
+      tempCtx.quadraticCurveTo(x + scaledWidth, y, x + scaledWidth, y + radius);
+      tempCtx.lineTo(x + scaledWidth, y + scaledHeight - radius);
+      tempCtx.quadraticCurveTo(x + scaledWidth, y + scaledHeight, x + scaledWidth - radius, y + scaledHeight);
+      tempCtx.lineTo(x + radius, y + scaledHeight);
+      tempCtx.quadraticCurveTo(x, y + scaledHeight, x, y + scaledHeight - radius);
+      tempCtx.lineTo(x, y + radius);
+      tempCtx.quadraticCurveTo(x, y, x + radius, y);
+      tempCtx.closePath();
+
+      // Apply clipping and draw video frame
+      tempCtx.save();
+      tempCtx.clip();
+      
       // Get interpolated zoom state for current time
       const zoomState = calculateCurrentZoomState(video.currentTime);
 
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      tempCtx.imageSmoothingEnabled = true;
+      tempCtx.imageSmoothingQuality = 'high';
 
       if (zoomState && zoomState.zoomFactor !== 1) {
-        ctx.save();
+        tempCtx.save();
+        const zoomedWidth = scaledWidth * zoomState.zoomFactor;
+        const zoomedHeight = scaledHeight * zoomState.zoomFactor;
+        const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
+        const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
         
-        applyZoomTransform(
-          ctx, 
-          canvas, 
-          zoomState.zoomFactor,
-          zoomState.positionX,
-          zoomState.positionY
-        );
-        
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        ctx.restore();
+        tempCtx.translate(x + zoomOffsetX, y + zoomOffsetY);
+        tempCtx.scale(zoomState.zoomFactor * scale, zoomState.zoomFactor * scale);
+        tempCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+        tempCtx.restore();
       } else {
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
       }
 
-      if (!video.paused) {
+      tempCtx.restore();
+
+      // Draw the temporary canvas onto the main canvas
+      ctx.drawImage(tempCanvas, 0, 0);
+
+      if (!exportMode && !video.paused) {
         animationFrameRef.current = requestAnimationFrame(drawFrame);
       }
     } finally {
       isDrawingRef.current = false;
     }
-  }, [currentTime, segment]);
+  }, [currentTime, segment, backgroundConfig]);
+
+  // Add this wrapper function
+  const animationFrameWrapper = useCallback(() => {
+    drawFrame(false);
+  }, [drawFrame]);
 
   // Separate animation frame management into its own effect
   useEffect(() => {
@@ -561,82 +613,53 @@ function App() {
 
   const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
 
-  // Update calculateCurrentZoomState to handle smooth transitions
+  // Update calculateCurrentZoomState to properly handle transitions between keyframes
   const calculateCurrentZoomState = (time: number) => {
-    if (!segment) return null;
+    if (!segment) return { zoomFactor: 1, positionX: 0.5, positionY: 0.5 };
 
     const sortedKeyframes = [...segment.zoomKeyframes].sort((a, b) => a.time - b.time);
-    
     if (sortedKeyframes.length === 0) {
       return { zoomFactor: 1, positionX: 0.5, positionY: 0.5 };
     }
 
-    const ANIMATION_DURATION = 1.0; // Standard 1 second animation
+    const ANIMATION_DURATION = 1.0;
 
-    // Special handling for the first keyframe
-      const firstKeyframe = sortedKeyframes[0];
-    
-    // If we're before or at the first keyframe
-    if (time <= firstKeyframe.time) {
-      const timeToKeyframe = firstKeyframe.time - time;
-      
-      // If we're within the animation period
-      if (timeToKeyframe <= ANIMATION_DURATION) {
-        const progress = 1 - (timeToKeyframe / ANIMATION_DURATION);
-        const easedProgress = getEasingFunction('easeOut')(progress);
-        
-        return {
-          zoomFactor: 1 + (firstKeyframe.zoomFactor - 1) * easedProgress,
-          positionX: 0.5 + (firstKeyframe.positionX - 0.5) * easedProgress,
-          positionY: 0.5 + (firstKeyframe.positionY - 0.5) * easedProgress
-        };
-      }
-      
+    // Find the next keyframe (if any)
+    const nextKeyframe = sortedKeyframes.find(k => k.time > time);
+    // Find the previous keyframe (if any)
+    const prevKeyframe = [...sortedKeyframes].reverse().find(k => k.time <= time);
+
+    // If we're before all keyframes
+    if (!prevKeyframe && !nextKeyframe) {
       return { zoomFactor: 1, positionX: 0.5, positionY: 0.5 };
     }
 
-    // Find the surrounding keyframes for current time
-    const currentKeyframeIndex = sortedKeyframes.findIndex(k => k.time > time) - 1;
-    
-    // If we're after the last keyframe
-    if (currentKeyframeIndex === sortedKeyframes.length - 1) {
-      return sortedKeyframes[currentKeyframeIndex];
+    // If we're after all keyframes, maintain last keyframe state
+    if (prevKeyframe && !nextKeyframe) {
+      return prevKeyframe;
     }
 
-    // We're between two keyframes
-    const currentKeyframe = sortedKeyframes[currentKeyframeIndex];
-    const nextKeyframe = sortedKeyframes[currentKeyframeIndex + 1];
-    
-    const timeBetweenKeyframes = nextKeyframe.time - currentKeyframe.time;
-    
-    // If keyframes are more than 1 second apart
-    if (timeBetweenKeyframes > ANIMATION_DURATION) {
-      const timeToNextKeyframe = nextKeyframe.time - time;
-      
-      // Only start animation 1 second before next keyframe
-      if (timeToNextKeyframe <= ANIMATION_DURATION) {
-        const progress = 1 - (timeToNextKeyframe / ANIMATION_DURATION);
-        const easedProgress = getEasingFunction(currentKeyframe.easingType)(progress);
-        
-        return {
-          zoomFactor: currentKeyframe.zoomFactor + (nextKeyframe.zoomFactor - currentKeyframe.zoomFactor) * easedProgress,
-          positionX: currentKeyframe.positionX + (nextKeyframe.positionX - currentKeyframe.positionX) * easedProgress,
-          positionY: currentKeyframe.positionY + (nextKeyframe.positionY - currentKeyframe.positionY) * easedProgress
-        };
-      }
-      
-      return currentKeyframe;
-    }
-    
-    // If keyframes are less than 1 second apart, animate over the entire duration
-    const progress = (time - currentKeyframe.time) / timeBetweenKeyframes;
-    const easedProgress = getEasingFunction(currentKeyframe.easingType)(progress);
+    // If we're approaching the next keyframe
+    if (nextKeyframe && time >= nextKeyframe.time - ANIMATION_DURATION) {
+      const progress = (time - (nextKeyframe.time - ANIMATION_DURATION)) / ANIMATION_DURATION;
+      const easedProgress = easeOutCubic(Math.min(1, Math.max(0, progress)));
 
-    return {
-      zoomFactor: currentKeyframe.zoomFactor + (nextKeyframe.zoomFactor - currentKeyframe.zoomFactor) * easedProgress,
-      positionX: currentKeyframe.positionX + (nextKeyframe.positionX - currentKeyframe.positionX) * easedProgress,
-      positionY: currentKeyframe.positionY + (nextKeyframe.positionY - currentKeyframe.positionY) * easedProgress
-    };
+      const startState = prevKeyframe || { zoomFactor: 1, positionX: 0.5, positionY: 0.5 };
+
+      return {
+        zoomFactor: startState.zoomFactor + (nextKeyframe.zoomFactor - startState.zoomFactor) * easedProgress,
+        positionX: startState.positionX + (nextKeyframe.positionX - startState.positionX) * easedProgress,
+        positionY: startState.positionY + (nextKeyframe.positionY - startState.positionY) * easedProgress
+      };
+    }
+
+    // If we're between keyframes but not in a transition
+    if (prevKeyframe) {
+      return prevKeyframe;
+    }
+
+    // Default state
+    return { zoomFactor: 1, positionX: 0.5, positionY: 0.5 };
   };
 
   // First, let's add a type for easing functions
@@ -661,24 +684,109 @@ function App() {
       .find(k => k.time < currentTime);
   };
 
+  // Add new export function to replace video-exporter.ts
   const handleExport = async () => {
     if (!currentVideo || !segment || !videoRef.current) return;
     
+    // Store original loop value before we start
+    const originalLoop = videoRef.current.loop;
+    
     try {
+      console.log('Starting export process...');
       setIsProcessing(true);
-      await exportVideo({
-        video: videoRef.current,
-        segment: {
-          ...segment,
-          zoomEffects: segment.zoomKeyframes
-        },
-        onProgress: setExportProgress,
-        findPreviousZoom: findPreviousZoom,  // This should now match the expected type
-        calculateZoomTransition
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      // Disable loop
+      video.loop = false;
+
+      const stream = canvas.captureStream(60);
+      const supportedMimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') 
+        ? 'video/webm;codecs=vp9,opus'
+        : 'video/webm;codecs=vp8,opus';
+      console.log('Using codec:', supportedMimeType);
+
+      const chunks: Blob[] = [];
+      let recorderStopped = false;
+      
+      const mediaRecorder = new MediaRecorder(stream, {
+        mimeType: supportedMimeType,
+        videoBitsPerSecond: 8000000
       });
+
+      mediaRecorder.ondataavailable = (e) => {
+        console.log('Data chunk received:', e.data.size);
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      console.log('Starting recording...');
+      mediaRecorder.start(1000);
+
+      console.log('Setting video position and playing...');
+      video.currentTime = segment.trimStart;
+      await video.play();
+
+      console.log('Waiting for video completion...');
+      await new Promise<void>((resolve) => {
+        const handleTimeUpdate = () => {
+          const progress = (video.currentTime - segment.trimStart) / (segment.trimEnd - segment.trimStart) * 100;
+          console.log(`Progress: ${progress.toFixed(1)}%, Time: ${video.currentTime.toFixed(2)}/${segment.trimEnd.toFixed(2)}`);
+          setExportProgress(Math.min(progress, 100));
+
+          if (video.currentTime >= segment.trimEnd && !recorderStopped) {
+            console.log('Reached end, stopping recorder...');
+            recorderStopped = true;
+            video.removeEventListener('timeupdate', handleTimeUpdate);
+            video.pause();
+            mediaRecorder.stop();
+            resolve();
+          }
+        };
+
+        // Handle if video tries to loop
+        const handleEnded = () => {
+          if (!recorderStopped) {
+            console.log('Video ended, stopping recorder...');
+            recorderStopped = true;
+            video.removeEventListener('timeupdate', handleTimeUpdate);
+            video.removeEventListener('ended', handleEnded);
+            mediaRecorder.stop();
+            resolve();
+          }
+        };
+
+        video.addEventListener('timeupdate', handleTimeUpdate);
+        video.addEventListener('ended', handleEnded);
+      });
+
+      console.log('Waiting for recorder to finish...');
+      await new Promise<void>(resolve => {
+        mediaRecorder.onstop = () => {
+          console.log('Creating final video file...');
+          const blob = new Blob(chunks, { type: supportedMimeType });
+          console.log('Blob created, size:', blob.size);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `processed_video_${Date.now()}.webm`;
+          a.click();
+          console.log('Download triggered');
+          URL.revokeObjectURL(url);
+          stream.getTracks().forEach(track => track.stop());
+          resolve();
+        };
+      });
+
+      console.log('Export complete!');
+
     } catch (error) {
-      console.error('Error processing video:', error);
+      console.error('Export error:', error);
     } finally {
+      // Restore original loop setting
+      if (videoRef.current) {
+        videoRef.current.loop = originalLoop;
+      }
       setIsProcessing(false);
       setExportProgress(0);
     }
@@ -760,60 +868,123 @@ function App() {
     });
   }, 32); // 32ms throttle
 
+  // Add this effect to redraw when background config changes
+  useEffect(() => {
+    if (videoRef.current && !videoRef.current.paused) return; // Don't interrupt if playing
+    requestAnimationFrame(drawFrame);
+  }, [backgroundConfig, drawFrame]);
+
+  // Add this helper function to generate background styles
+  const getBackgroundStyle = (ctx: CanvasRenderingContext2D, type: BackgroundConfig['backgroundType']) => {
+    switch (type) {
+      case 'gradient1':
+        const gradient1 = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient1.addColorStop(0, '#2563eb'); // blue-600
+        gradient1.addColorStop(1, '#7c3aed'); // violet-600
+        return gradient1;
+      case 'gradient2':
+        const gradient2 = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient2.addColorStop(0, '#fb7185'); // rose-400
+        gradient2.addColorStop(1, '#fdba74'); // orange-300
+        return gradient2;
+      case 'gradient3':
+        const gradient3 = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient3.addColorStop(0, '#10b981'); // emerald-500
+        gradient3.addColorStop(1, '#2dd4bf'); // teal-400
+        return gradient3;
+      case 'solid':
+      default:
+        return '#000000';
+    }
+  };
+
+  // Add this state near the top of the App component
+  const [recordingDuration, setRecordingDuration] = useState(0);
+
+  // Add this effect to track recording duration
+  useEffect(() => {
+    let interval: number;
+    
+    if (isRecording) {
+      const startTime = Date.now();
+      interval = window.setInterval(() => {
+        setRecordingDuration(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+    } else {
+      setRecordingDuration(0);
+    }
+
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
+  }, [isRecording]);
+
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
       {/* Header */}
       <header className="bg-[#1a1a1b] border-b border-[#343536]">
-        <div className="max-w-6xl mx-auto px-4 py-4">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
           <h1 className="text-2xl font-bold text-[#d7dadc]">Video Editor</h1>
+          
+          {/* Move export button to header right */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={isRecording ? handleStopRecording : handleStartRecording}
+                disabled={isProcessing || isLoadingVideo}
+                className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors
+                  ${isRecording 
+                    ? 'bg-red-500 hover:bg-red-600 text-white' 
+                    : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                  }
+                `}
+              >
+                {isRecording ? (
+                  <>
+                    <StopCircle className="w-4 h-4 mr-2" />
+                    Stop Recording
+                  </>
+                ) : isLoadingVideo ? (
+                  <>
+                    <span className="animate-spin mr-2">⏳</span>
+                    Loading Video...
+                  </>
+                ) : (
+                  <>
+                    <Video className="w-4 h-4 mr-2" />
+                    {currentVideo ? 'New Recording' : 'Start Recording'}
+                  </>
+                )}
+              </Button>
+              {isRecording && (
+                <span className="text-red-500 font-medium">
+                  {formatTime(recordingDuration)}
+                </span>
+              )}
+            </div>
+
+            {currentVideo && (
+              <Button
+                onClick={handleExport}
+                disabled={isProcessing}
+                className={`flex items-center px-4 py-2 h-9 text-sm font-medium
+                  ${isProcessing 
+                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
+                    : 'bg-[#0079d3] hover:bg-[#1484d6] text-white'
+                  }
+                `}
+              >
+                <Download className="w-4 h-4 mr-2" />
+                Export Video
+              </Button>
+            )}
+          </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-        {/* Controls */}
-        <div className="flex justify-between items-center gap-4 mb-6">
-          <div className="flex gap-4">
-            <button
-              onClick={isRecording ? handleStopRecording : handleStartRecording}
-              disabled={isProcessing || isLoadingVideo}
-              className={`flex items-center px-4 py-2 rounded-md text-white transition-colors
-                ${isRecording 
-                  ? 'bg-red-500 hover:bg-red-600' 
-                  : 'bg-[#0079d3] hover:bg-[#1484d6]'
-                }`}
-            >
-              {isRecording ? (
-                <>
-                  <StopCircle className="w-4 h-4 mr-2" />
-                  Stop Recording
-                </>
-              ) : isLoadingVideo ? (
-                <>
-                  <span className="animate-spin mr-2">⏳</span>
-                  Loading Video...
-                </>
-              ) : (
-                <>
-                  <Video className="w-4 h-4 mr-2" />
-                  {currentVideo ? 'Start New Recording' : 'Start Recording'}
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Export Button - Now in the controls section */}
-          {segment && segment.zoomKeyframes && segment.zoomKeyframes.length > 0 && (
-          <Button
-              onClick={handleExport}
-              disabled={isProcessing}
-              className="bg-[#0079d3] hover:bg-[#1484d6] text-white px-6"
-            >
-              <Download className="w-4 h-4 mr-2" />
-              Export Video with Effects
-          </Button>
-          )}
-        </div>
-
         {error && (
           <p className="text-red-500 mb-4">{error}</p>
         )}
@@ -833,37 +1004,17 @@ function App() {
                 <div 
                   className="absolute inset-0 flex items-center justify-center"
                 >
-                  <div 
-                    className="relative w-full h-full"
-              style={{
-                      maxWidth: `${backgroundConfig.scale}%`,
-                      maxHeight: `${backgroundConfig.scale}%`
-              }}
-                  >
-                <div
-                      className="w-full h-full overflow-hidden"
-                  style={{
-                        borderRadius: `${backgroundConfig.borderRadius}px`
-                      }}
-                    >
-                      {/* Video and canvas elements */}
-                      <video 
-                        ref={videoRef}
-                        className="hidden"
-                        playsInline
-                        preload="auto"
-                        crossOrigin="anonymous"
-                      />
-                      
-                      <canvas 
-                        ref={canvasRef}
-                        className="w-full h-full object-contain"
-                  style={{
-                          imageRendering: 'pixelated'
-                        }}
-                      />
-                    </div>
-                  </div>
+                  <canvas 
+                    ref={canvasRef}
+                    className="w-full h-full object-contain"
+                  />
+                  <video 
+                    ref={videoRef}
+                    className="hidden"
+                    playsInline
+                    preload="auto"
+                    crossOrigin="anonymous"
+                  />
                 </div>
 
                 {/* Playback Controls - Now positioned relative to the container */}
@@ -893,34 +1044,35 @@ function App() {
 
             {/* Side Panel - More compact layout */}
             <div className="col-span-1 space-y-3">
-              {/* Panel Toggle Buttons - Made more compact */}
-              <div className="flex gap-1.5">
-          <Button
-            onClick={() => setActivePanel('zoom')}
+              {/* Panel Toggle Buttons - Professional dark theme style */}
+              <div className="flex bg-[#272729] p-0.5 rounded-md">
+                <Button
+                  onClick={() => setActivePanel('zoom')}
                   variant={activePanel === 'zoom' ? 'default' : 'outline'}
                   size="sm"
                   className={`flex-1 ${
                     activePanel === 'zoom' 
-                      ? 'bg-[#0079d3] text-white' 
-                      : 'text-[#d7dadc] border-[#343536]'
+                      ? 'bg-[#1a1a1b] text-[#d7dadc] shadow-sm border-0' 
+                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/50 hover:text-[#d7dadc]'
                   }`}
                 >
                   Zoom
-          </Button>
-          <Button
-            onClick={() => setActivePanel('background')}
+                </Button>
+                <Button
+                  onClick={() => setActivePanel('background')}
                   variant={activePanel === 'background' ? 'default' : 'outline'}
                   size="sm"
                   className={`flex-1 ${
                     activePanel === 'background' 
-                      ? 'bg-[#0079d3] text-white' 
-                      : 'text-[#d7dadc] border-[#343536]'
+                      ? 'bg-[#1a1a1b] text-[#d7dadc] shadow-sm border-0' 
+                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/50 hover:text-[#d7dadc]'
                   }`}
                 >
                   Background
-          </Button>
-        </div>
+                </Button>
+              </div>
 
+              {/* Update the panel content styling */}
               {activePanel === 'zoom' ? (
                 <>
                   {(editingKeyframeId !== null) ? (
@@ -940,26 +1092,26 @@ function App() {
                             }}
                             variant="ghost"
                             size="icon"
-                            className="text-white"
+                            className="text-[#d7dadc] hover:text-red-400 hover:bg-red-400/10 transition-colors"
                           >
                             <Trash2 className="w-5 h-5" />
                           </Button>
                         )}
                       </div>
 
+                      {/* Update slider styling */}
                       <div className="space-y-4">
-                        {/* Zoom Factor Control */}
                         <div>
                           <label className="block text-sm font-medium text-[#d7dadc] mb-2">
                             Zoom Factor
                           </label>
-            <div className="space-y-2">
-              <input
-                type="range"
-                min="1"
-                max="3"
+                          <div className="space-y-2">
+                            <input
+                              type="range"
+                              min="1"
+                              max="3"
                               step="0.1"
-                value={zoomFactor}
+                              value={zoomFactor}
                               onChange={(e) => {
                                 const newValue = Number(e.target.value);
                                 setZoomFactor(newValue);
@@ -967,166 +1119,161 @@ function App() {
                               }}
                               className="w-full accent-[#0079d3]"
                             />
-                            <div className="flex justify-between text-sm text-[#818384]">
-                              <span>No zoom</span>
-                              <span>{Math.round((zoomFactor - 1) * 100)}%</span>
-                              <span>200%</span>
-            </div>
-              </div>
-            </div>
+                            <div className="flex justify-between text-xs text-[#818384] font-medium">
+                              <span>1x</span>
+                              <span>{zoomFactor.toFixed(1)}x</span>
+                              <span>3x</span>
+                            </div>
+                          </div>
+                        </div>
 
-                        {/* Position Controls */}
+                        {/* Position Controls with improved styling */}
                         <div className="space-y-4">
                           <div>
-                            <label className="block text-sm font-medium text-[#d7dadc] mb-2">
-                              Horizontal Position
+                            <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                              <span>Horizontal Position</span>
+                              <span className="text-[#818384]">
+                                {Math.round(segment?.zoomKeyframes[editingKeyframeId!]?.positionX * 100)}%
+                              </span>
                             </label>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.01"
                               value={segment?.zoomKeyframes[editingKeyframeId!]?.positionX ?? 0.5}
                               onChange={(e) => {
                                 throttledUpdateZoom({ positionX: Number(e.target.value) });
                               }}
                               className="w-full accent-[#0079d3]"
-              />
-            </div>
+                            />
+                          </div>
 
                           <div>
-                            <label className="block text-sm font-medium text-[#d7dadc] mb-2">
-                              Vertical Position
+                            <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                              <span>Vertical Position</span>
+                              <span className="text-[#818384]">
+                                {Math.round(segment?.zoomKeyframes[editingKeyframeId!]?.positionY * 100)}%
+                              </span>
                             </label>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.01"
                               value={segment?.zoomKeyframes[editingKeyframeId!]?.positionY ?? 0.5}
                               onChange={(e) => {
                                 throttledUpdateZoom({ positionY: Number(e.target.value) });
                               }}
                               className="w-full accent-[#0079d3]"
-              />
-            </div>
-              </div>
-            </div>
-            </div>
-                  ) : (
-                    <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4 flex flex-col items-center justify-center text-center">
-                      <div className="bg-[#272729] rounded-full p-2 mb-2">
-                        <Search className="w-5 h-5 text-[#818384]" />
+                            />
+                          </div>
+                        </div>
                       </div>
-                      <p className="text-[#d7dadc] font-medium text-sm">No Zoom Effect Selected</p>
-                      <p className="text-[#818384] text-xs mt-1">
+                    </div>
+                  ) : (
+                    <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6 flex flex-col items-center justify-center text-center">
+                      <div className="bg-[#272729] rounded-full p-3 mb-3">
+                        <Search className="w-6 h-6 text-[#818384]" />
+                      </div>
+                      <p className="text-[#d7dadc] font-medium">No Zoom Effect Selected</p>
+                      <p className="text-[#818384] text-sm mt-1 max-w-[200px]">
                         Select a zoom effect on the timeline or add a new one
                       </p>
-          </div>
-        )}
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
                   <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Background & Layout</h2>
                   
                   <div className="space-y-4">
-                    {/* Padding Control - More compact */}
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-1.5">
-                        Video Size
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                        <span>Video Size</span>
+                        <span className="text-[#818384]">{backgroundConfig.scale}%</span>
                       </label>
-                      <div className="space-y-1">
-              <input
-                type="range"
-                min="50"
-                max="100"
-                value={backgroundConfig.scale}
-                          onChange={(e) => {
-                            setBackgroundConfig(prev => ({
-                              ...prev,
-                              scale: Number(e.target.value)
-                            }));
-                          }}
-                          className="w-full accent-[#0079d3]"
-                        />
-                        <div className="flex justify-between text-xs text-[#818384]">
-                          <span>50%</span>
-                          <span>{backgroundConfig.scale}%</span>
-                          <span>100%</span>
-                        </div>
-                      </div>
-            </div>
+                      <input
+                        type="range"
+                        min="50"
+                        max="100"
+                        value={backgroundConfig.scale}
+                        onChange={(e) => {
+                          setBackgroundConfig(prev => ({
+                            ...prev,
+                            scale: Number(e.target.value)
+                          }));
+                        }}
+                        className="w-full accent-[#0079d3]"
+                      />
+                    </div>
 
-                    {/* Border Radius Control - More compact */}
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-1.5">
-                        Border Radius
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                        <span>Border Radius</span>
+                        <span className="text-[#818384]">{backgroundConfig.borderRadius}px</span>
                       </label>
-                      <div className="space-y-1">
-              <input
-                type="range"
-                min="0"
-                max="64"
-                value={backgroundConfig.borderRadius}
-                          onChange={(e) => {
-                            setBackgroundConfig(prev => ({
-                              ...prev,
-                              borderRadius: Number(e.target.value)
-                            }));
-                          }}
-                          className="w-full accent-[#0079d3]"
-                        />
-                        <div className="flex justify-between text-xs text-[#818384]">
-                          <span>0px</span>
-                          <span>{backgroundConfig.borderRadius}px</span>
-                          <span>64px</span>
-                        </div>
-                      </div>
-            </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="64"
+                        value={backgroundConfig.borderRadius}
+                        onChange={(e) => {
+                          setBackgroundConfig(prev => ({
+                            ...prev,
+                            borderRadius: Number(e.target.value)
+                          }));
+                        }}
+                        className="w-full accent-[#0079d3]"
+                      />
+                    </div>
 
-                    {/* Background Type Selection - More compact */}
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2">
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-3">
                         Background Style
                       </label>
-                      <div className="grid grid-cols-2 gap-1.5">
+                      <div className="grid grid-cols-2 gap-2">
                         {Object.entries(GRADIENT_PRESETS).map(([key, gradient]) => (
                           <button
-                    key={key}
+                            key={key}
                             onClick={() => setBackgroundConfig(prev => ({
                               ...prev,
                               backgroundType: key as BackgroundConfig['backgroundType']
                             }))}
                             className={`
-                              h-12 rounded-lg
+                              h-14 rounded-lg transition-all
                               ${gradient}
                               ${backgroundConfig.backgroundType === key 
-                                ? 'ring-2 ring-[#0079d3] ring-offset-1 ring-offset-[#1a1a1b]' 
-                                : 'ring-1 ring-[#343536]'
+                                ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' 
+                                : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'
                               }
                             `}
-                  />
-                ))}
+                          />
+                        ))}
                       </div>
-              </div>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        )}
-            </div>
-      </div>
 
           {/* Timeline Section */}
           <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6">
             <div className="flex justify-between items-center mb-8">
               <h2 className="text-lg font-semibold text-[#d7dadc]">Timeline</h2>
               <Button 
-                onClick={handleAddKeyframe}
+                onClick={() => {
+                  handleAddKeyframe();
+                  setActivePanel('zoom');  // Switch to zoom panel when adding keyframe
+                }}
                 disabled={isProcessing || !currentVideo}
-                className={`${
-                  !currentVideo || isProcessing
-                    ? 'bg-gray-600 text-gray-400 hover:bg-gray-600 cursor-not-allowed'
-                    : 'bg-[#0079d3] hover:bg-[#1484d6] text-white'
-                }`}
+                className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors
+                  ${!currentVideo || isProcessing
+                    ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed'
+                    : 'bg-[#0079d3] hover:bg-[#1484d6] text-white shadow-sm'
+                  }
+                `}
               >
                 <Plus className="w-4 h-4 mr-2" />
                 Add Zoom at Playhead
@@ -1205,45 +1352,67 @@ function App() {
                   {/* Zoom effects */}
                   {segment?.zoomKeyframes.map((keyframe, index) => {
                     const active = editingKeyframeId === index;
+                    const prevKeyframe = index > 0 ? segment.zoomKeyframes[index - 1] : null;
+                    
+                    // Use exact 1.0 second duration for animation range
+                    const ANIMATION_DURATION = 1.0;
+                    const animationStartTime = Math.max(0, keyframe.time - ANIMATION_DURATION);
                     
                     return (
-                      <div
-                        key={index}
-                        className="absolute cursor-pointer group"
-                        style={{
-                          left: `${(keyframe.time / duration) * 100}%`,
-                          transform: 'translateX(-50%)', // Center the entire marker
-                          top: '-32px', // Move up to avoid playhead
-                          height: '56px', // Fixed height for consistent alignment
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (videoRef.current) {
-                            videoRef.current.currentTime = keyframe.time;
-                            setCurrentTime(keyframe.time);
-                            setEditingKeyframeId(index);
-                          }
-                        }}
-                      >
-                        {/* Container for vertical alignment */}
-                        <div className="relative flex flex-col items-center">
-                          {/* Zoom value label */}
-                          <div className={`
-                            px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap
-                            ${active ? 'bg-[#0079d3] text-white' : 'bg-[#0079d3]/20 text-[#0079d3]'}
-                          `}>
-                            {Math.round((keyframe.zoomFactor - 1) * 100)}%
+                      <div key={index}>
+                        {/* Animation range on timeline */}
+                        <div
+                          className={`
+                            absolute h-full cursor-pointer
+                            transition-colors border-r border-[#0079d3]
+                            ${active ? 'opacity-100' : 'opacity-80'}
+                          `}
+                          style={{
+                            left: `${(animationStartTime / duration) * 100}%`,
+                            width: `${(ANIMATION_DURATION / duration) * 100}%`,  // Use exact duration
+                            zIndex: 20,
+                            background: `linear-gradient(90deg, 
+                              rgba(0, 121, 211, 0.1) 0%,
+                              rgba(0, 121, 211, ${0.1 + (keyframe.zoomFactor - 1) * 0.3}) 100%
+                            )`
+                          }}
+                        />
+
+                        {/* Keyframe marker */}
+                        <div
+                          className="absolute cursor-pointer group"
+                          style={{
+                            left: `${(keyframe.time / duration) * 100}%`,
+                            transform: 'translateX(-50%)',
+                            top: '-32px',
+                            height: '56px',
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (videoRef.current) {
+                              videoRef.current.currentTime = keyframe.time;
+                              setCurrentTime(keyframe.time);
+                              setEditingKeyframeId(index);
+                              setActivePanel('zoom');  // Switch to zoom panel when clicking keyframe
+                            }
+                          }}
+                        >
+                          <div className="relative flex flex-col items-center">
+                            <div className={`
+                              px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap
+                              ${active ? 'bg-[#0079d3] text-white' : 'bg-[#0079d3]/20 text-[#0079d3]'}
+                            `}>
+                              {Math.round((keyframe.zoomFactor - 1) * 100)}%
+                            </div>
+
+                            <div className={`
+                              w-3 h-3 bg-[#0079d3] rounded-full 
+                              hover:scale-125 transition-transform
+                              ${active ? 'ring-2 ring-white' : ''}
+                            `} />
+
+                            <div className="w-[1px] h-10 bg-[#0079d3]/30 group-hover:bg-[#0079d3]/50" />
                           </div>
-
-                          {/* Keyframe dot */}
-                          <div className={`
-                            w-3 h-3 bg-[#0079d3] rounded-full 
-                            hover:scale-125 transition-transform
-                            ${active ? 'ring-2 ring-white' : ''}
-                          `} />
-
-                          {/* Vertical line - adjusted height to match timeline */}
-                          <div className="w-[1px] h-10 bg-[#0079d3]/30 group-hover:bg-[#0079d3]/50" />
                         </div>
                       </div>
                     );
