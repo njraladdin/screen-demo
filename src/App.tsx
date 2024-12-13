@@ -93,7 +93,7 @@ function App() {
   const tempCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
 
   // First, update the drawFrame signature to handle export mode
-  const drawFrame = useCallback(async (exportMode = false, onExportProgress?: (progress: number) => void) => {
+  const drawFrame = useCallback(async (exportMode = false) => {
     if (isDrawingRef.current) return;
     
     const video = videoRef.current;
@@ -103,7 +103,7 @@ function App() {
     // Make sure video is ready
     if (video.readyState < 2) {  // HAVE_CURRENT_DATA
       if (!exportMode) {
-        requestAnimationFrame(drawFrame);
+        requestAnimationFrame(frameRequestCallback);
       }
       return;
     }
@@ -120,7 +120,7 @@ function App() {
         const now = performance.now();
         const timeSinceLastFrame = now - lastFrameTime;
         if (timeSinceLastFrame < 8) {
-          animationFrameRef.current = requestAnimationFrame(drawFrame);
+          animationFrameRef.current = requestAnimationFrame(frameRequestCallback);
           return;
         }
         lastFrameTime = now;
@@ -192,15 +192,15 @@ function App() {
       ctx.drawImage(tempCanvas, 0, 0);
 
       if (!exportMode && !video.paused) {
-        animationFrameRef.current = requestAnimationFrame(drawFrame);
+        animationFrameRef.current = requestAnimationFrame(frameRequestCallback);
       }
     } finally {
       isDrawingRef.current = false;
     }
   }, [currentTime, segment, backgroundConfig]);
 
-  // Add this wrapper function
-  const animationFrameWrapper = useCallback(() => {
+  // Add this after drawFrame
+  const frameRequestCallback = useCallback((_time: number) => {
     drawFrame(false);
   }, [drawFrame]);
 
@@ -568,49 +568,6 @@ function App() {
   };
 
   // Add these helper functions for zoom transitions
-  const applyZoomTransform = (
-    ctx: CanvasRenderingContext2D,
-    canvas: HTMLCanvasElement,
-    zoom: number,
-    posX: number,
-    posY: number
-  ) => {
-    const scaledWidth = canvas.width * zoom;
-    const scaledHeight = canvas.height * zoom;
-    const offsetX = (canvas.width - scaledWidth) * posX;
-    const offsetY = (canvas.height - scaledHeight) * posY;
-    
-    ctx.translate(offsetX, offsetY);
-    ctx.scale(zoom, zoom);
-  };
-
-  const calculateZoomTransition = (
-    currentTime: number,
-    activeZoom: ZoomKeyframe,
-    previousZoom: ZoomKeyframe | null
-  ) => {
-    const TRANSITION_DURATION = 1.0;
-    const transitionProgress = Math.min(
-      (currentTime - activeZoom.time) / TRANSITION_DURATION,
-      1
-    );
-    const easedProgress = easeOutCubic(transitionProgress);
-
-    if (previousZoom) {
-      return {
-        currentZoom: previousZoom.zoomFactor + (activeZoom.zoomFactor - previousZoom.zoomFactor) * easedProgress,
-        currentPosX: previousZoom.positionX + (activeZoom.positionX - previousZoom.positionX) * easedProgress,
-        currentPosY: previousZoom.positionY + (activeZoom.positionY - previousZoom.positionY) * easedProgress
-      };
-    }
-
-    return {
-      currentZoom: 1 + (activeZoom.zoomFactor - 1) * easedProgress,
-      currentPosX: activeZoom.positionX,
-      currentPosY: activeZoom.positionY
-    };
-  };
-
   const easeOutCubic = (x: number): number => 1 - Math.pow(1 - x, 3);
 
   // Update calculateCurrentZoomState to properly handle transitions between keyframes
@@ -660,28 +617,6 @@ function App() {
 
     // Default state
     return { zoomFactor: 1, positionX: 0.5, positionY: 0.5 };
-  };
-
-  // First, let's add a type for easing functions
-  type EasingType = 'linear' | 'easeOut' | 'easeInOut';
-
-  // Add a helper function to get easing function
-  const getEasingFunction = (type: EasingType) => {
-    switch (type) {
-      case 'linear':
-        return (x: number) => x;
-      case 'easeOut':
-        return (x: number) => 1 - Math.pow(1 - x, 3);
-      case 'easeInOut':
-        return (x: number) => x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
-    }
-  };
-
-  // Update findPreviousZoom to match the expected signature
-  const findPreviousZoom = (effects: ZoomKeyframe[], currentTime: number) => {
-    return [...effects]
-      .sort((a, b) => b.time - a.time)
-      .find(k => k.time < currentTime);
   };
 
   // Add new export function to replace video-exporter.ts
@@ -823,30 +758,6 @@ function App() {
     setEditingKeyframeId(newKeyframes.indexOf(newKeyframe));
   };
 
-  // Update handleKeyframeChange to preview changes
-  const handleKeyframeChange = (
-    keyframeId: number,
-    updates: Partial<ZoomKeyframe>
-  ) => {
-    if (!segment || !videoRef.current) return;
-    
-    const updatedKeyframes = segment.zoomKeyframes.map((keyframe, index) =>
-      index === keyframeId
-        ? { ...keyframe, ...updates }
-        : keyframe
-    );
-
-    setSegment({
-      ...segment,
-      zoomKeyframes: updatedKeyframes
-    });
-
-    // Force a redraw to show the changes immediately
-    requestAnimationFrame(() => {
-      drawFrame();
-    });
-  };
-
   // Add throttled update function for zoom configuration
   const throttledUpdateZoom = useThrottle((updates: Partial<ZoomKeyframe>) => {
     if (!segment || editingKeyframeId === null) return;
@@ -871,7 +782,13 @@ function App() {
   // Add this effect to redraw when background config changes
   useEffect(() => {
     if (videoRef.current && !videoRef.current.paused) return; // Don't interrupt if playing
-    requestAnimationFrame(drawFrame);
+    
+    // Create a proper FrameRequestCallback
+    const frameCallback: FrameRequestCallback = (_time: number) => {
+      drawFrame(false);
+    };
+    
+    requestAnimationFrame(frameCallback);
   }, [backgroundConfig, drawFrame]);
 
   // Add this helper function to generate background styles
@@ -1133,7 +1050,7 @@ function App() {
                             <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
                               <span>Horizontal Position</span>
                               <span className="text-[#818384]">
-                                {Math.round(segment?.zoomKeyframes[editingKeyframeId!]?.positionX * 100)}%
+                                {Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionX ?? 0.5) * 100)}%
                               </span>
                             </label>
                             <input
@@ -1153,7 +1070,7 @@ function App() {
                             <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
                               <span>Vertical Position</span>
                               <span className="text-[#818384]">
-                                {Math.round(segment?.zoomKeyframes[editingKeyframeId!]?.positionY * 100)}%
+                                {Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionY ?? 0.5) * 100)}%
                               </span>
                             </label>
                             <input
@@ -1352,7 +1269,6 @@ function App() {
                   {/* Zoom effects */}
                   {segment?.zoomKeyframes.map((keyframe, index) => {
                     const active = editingKeyframeId === index;
-                    const prevKeyframe = index > 0 ? segment.zoomKeyframes[index - 1] : null;
                     
                     // Use exact 1.0 second duration for animation range
                     const ANIMATION_DURATION = 1.0;
