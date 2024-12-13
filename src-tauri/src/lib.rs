@@ -276,7 +276,7 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
     // Configure capture settings
     let settings = Settings::new(
         monitor,
-        CursorCaptureSettings::Default,
+        CursorCaptureSettings::WithoutCursor,
         DrawBorderSettings::Default,
         ColorFormat::Bgra8,
         "Recording started".to_string(),
