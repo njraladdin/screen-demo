@@ -659,14 +659,54 @@ function App() {
 
                 {segment?.zoomKeyframes.map((keyframe, index) => {
                   const active = editingKeyframeId === index;
-                  const ANIMATION_DURATION = 1.0;
-                  const animationStartTime = Math.max(0, keyframe.time - ANIMATION_DURATION);
+                  
+                  // Get previous and next keyframes
+                  const prevKeyframe = index > 0 ? segment.zoomKeyframes[index - 1] : null;
+                  const nextKeyframe = segment.zoomKeyframes[index + 1];
+                  
+                  // Calculate range start and end
+                  // If there's a previous keyframe, start at that keyframe
+                  // Otherwise, start 0.5s before current keyframe
+                  const rangeStart = prevKeyframe 
+                    ? prevKeyframe.time 
+                    : Math.max(0, keyframe.time - 0.5);
+                    
+                  // Range always ends at current keyframe
+                  const rangeEnd = keyframe.time;
+                  
                   return (
                     <div key={index}>
-                      <div className={`absolute h-full cursor-pointer transition-colors border-r border-[#0079d3] ${active ? 'opacity-100' : 'opacity-80'}`} style={{left: `${(animationStartTime / duration) * 100}%`, width: `${(ANIMATION_DURATION / duration) * 100}%`, zIndex: 20, background: `linear-gradient(90deg, rgba(0, 121, 211, 0.1) 0%, rgba(0, 121, 211, ${0.1 + (keyframe.zoomFactor - 1) * 0.3}) 100%)`}} />
-                      <div className="absolute cursor-pointer group" style={{left: `${(keyframe.time / duration) * 100}%`, transform: 'translateX(-50%)', top: '-32px', height: '56px'}} onClick={(e) => {e.stopPropagation(); if (videoRef.current) {videoRef.current.currentTime = keyframe.time; setCurrentTime(keyframe.time); setEditingKeyframeId(index); setActivePanel('zoom');}}}>
+                      <div 
+                        className={`absolute h-full cursor-pointer transition-colors border-r border-[#0079d3] ${active ? 'opacity-100' : 'opacity-80'}`} 
+                        style={{
+                          left: `${(rangeStart / duration) * 100}%`, 
+                          width: `${((rangeEnd - rangeStart) / duration) * 100}%`, 
+                          zIndex: 20, 
+                          background: `linear-gradient(90deg, rgba(0, 121, 211, 0.1) 0%, rgba(0, 121, 211, ${0.1 + (keyframe.zoomFactor - 1) * 0.3}) 100%)`
+                        }} 
+                      />
+                      <div 
+                        className="absolute cursor-pointer group" 
+                        style={{
+                          left: `${(keyframe.time / duration) * 100}%`, 
+                          transform: 'translateX(-50%)', 
+                          top: '-32px', 
+                          height: '56px'
+                        }} 
+                        onClick={(e) => {
+                          e.stopPropagation(); 
+                          if (videoRef.current) {
+                            videoRef.current.currentTime = keyframe.time; 
+                            setCurrentTime(keyframe.time); 
+                            setEditingKeyframeId(index); 
+                            setActivePanel('zoom');
+                          }
+                        }}
+                      >
                         <div className="relative flex flex-col items-center">
-                          <div className={`px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap ${active ? 'bg-[#0079d3] text-white' : 'bg-[#0079d3]/20 text-[#0079d3]'}`}>{Math.round((keyframe.zoomFactor - 1) * 100)}%</div>
+                          <div className={`px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap ${active ? 'bg-[#0079d3] text-white' : 'bg-[#0079d3]/20 text-[#0079d3]'}`}>
+                            {Math.round((keyframe.zoomFactor - 1) * 100)}%
+                          </div>
                           <div className={`w-3 h-3 bg-[#0079d3] rounded-full hover:scale-125 transition-transform ${active ? 'ring-2 ring-white' : ''}`} />
                           <div className="w-[1px] h-10 bg-[#0079d3]/30 group-hover:bg-[#0079d3]/50" />
                         </div>

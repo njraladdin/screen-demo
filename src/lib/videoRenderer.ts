@@ -248,11 +248,8 @@ export class VideoRenderer {
       return { time: 0, duration: 0, zoomFactor: 1, positionX: 0.5, positionY: 0.5, easingType: 'linear' };
     }
 
-    const ANIMATION_DURATION = 1.0;
-
-    // Find the next keyframe (if any)
+    // Find the next and previous keyframes
     const nextKeyframe = sortedKeyframes.find(k => k.time > currentTime);
-    // Find the previous keyframe (if any)
     const prevKeyframe = [...sortedKeyframes].reverse().find(k => k.time <= currentTime);
 
     // If we're before all keyframes
@@ -265,26 +262,44 @@ export class VideoRenderer {
       return prevKeyframe;
     }
 
-    // If we're approaching the next keyframe
-    if (nextKeyframe && currentTime >= nextKeyframe.time - ANIMATION_DURATION) {
-      const progress = (currentTime - (nextKeyframe.time - ANIMATION_DURATION)) / ANIMATION_DURATION;
+    // If we're between keyframes
+    if (prevKeyframe && nextKeyframe) {
+      // Calculate the total duration between keyframes
+      const totalDuration = nextKeyframe.time - prevKeyframe.time;
+      // Calculate progress between the two keyframes
+      const progress = (currentTime - prevKeyframe.time) / totalDuration;
+      
+      // Use easing only if we're actually transitioning
       const easedProgress = this.easeOutCubic(Math.min(1, Math.max(0, progress)));
-
-      const startState = prevKeyframe || { time: 0, duration: 0, zoomFactor: 1, positionX: 0.5, positionY: 0.5, easingType: 'linear' };
 
       return {
         time: currentTime,
-        duration: ANIMATION_DURATION,
-        zoomFactor: startState.zoomFactor + (nextKeyframe.zoomFactor - startState.zoomFactor) * easedProgress,
-        positionX: startState.positionX + (nextKeyframe.positionX - startState.positionX) * easedProgress,
-        positionY: startState.positionY + (nextKeyframe.positionY - startState.positionY) * easedProgress,
+        duration: totalDuration,
+        zoomFactor: prevKeyframe.zoomFactor + (nextKeyframe.zoomFactor - prevKeyframe.zoomFactor) * easedProgress,
+        positionX: prevKeyframe.positionX + (nextKeyframe.positionX - prevKeyframe.positionX) * easedProgress,
+        positionY: prevKeyframe.positionY + (nextKeyframe.positionY - prevKeyframe.positionY) * easedProgress,
         easingType: 'easeOut'
       };
     }
 
-    // If we're between keyframes but not in a transition
-    if (prevKeyframe) {
-      return prevKeyframe;
+    // If we're approaching the first keyframe
+    if (nextKeyframe) {
+      const APPROACH_DURATION = 0.5; // Half second approach animation
+      const distanceToKeyframe = nextKeyframe.time - currentTime;
+      
+      if (distanceToKeyframe <= APPROACH_DURATION) {
+        const progress = (APPROACH_DURATION - distanceToKeyframe) / APPROACH_DURATION;
+        const easedProgress = this.easeOutCubic(Math.min(1, Math.max(0, progress)));
+
+        return {
+          time: currentTime,
+          duration: APPROACH_DURATION,
+          zoomFactor: 1 + (nextKeyframe.zoomFactor - 1) * easedProgress,
+          positionX: 0.5 + (nextKeyframe.positionX - 0.5) * easedProgress,
+          positionY: 0.5 + (nextKeyframe.positionY - 0.5) * easedProgress,
+          easingType: 'easeOut'
+        };
+      }
     }
 
     // Default state
