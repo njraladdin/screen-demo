@@ -1,0 +1,39 @@
+Mouse Cursor Smoothing
+=====================
+
+Problem
+-------
+Mouse cursor movement appears jittery with small variations and micro-movements.
+
+Solution
+--------
+Implemented weighted average smoothing:
+- Takes a window of positions (5 frames) around current time
+- Applies weighted averaging where positions closer to current time have more weight
+- Uses formula: weight = 1 / (timeDiff + 0.1)
+
+Implementation
+-------------
+const windowSize = 5;  // 5 frames window
+relevantPositions = mousePositions.filter(pos => 
+  pos.timestamp >= currentTime - (windowSize/30) && 
+  pos.timestamp <= currentTime + (windowSize/30)
+);
+
+// Weighted average calculation
+positions.forEach(pos => {
+  const timeDiff = Math.abs(pos.timestamp - currentTime);
+  const weight = 1 / (timeDiff + 0.1);
+  smoothX += pos.x * weight;
+  smoothY += pos.y * weight;
+});
+
+Why It Works
+-----------
+- Reduces jitter by averaging multiple positions
+- Maintains responsiveness by weighting recent positions more heavily
+- Window size of 5 frames provides good balance between smoothness and latency
+
+Files Changed
+------------
+src/lib/videoRenderer.ts 

@@ -157,41 +157,50 @@ export class VideoRenderer {
 
       // Mouse cursor
       const cursorStart = performance.now();
-      if (mousePositions.length > 0) {
-        const currentVideoTime = video.currentTime;
-        const timeWindow = 1/30; // 1 frame at 30fps
-        
-        const currentPositions = mousePositions.filter(pos => 
-          pos.timestamp >= currentVideoTime - timeWindow && 
-          pos.timestamp <= currentVideoTime
-        );
+      const interpolatedPosition = this.interpolateCursorPosition(video.currentTime, mousePositions, backgroundConfig);
+      if (interpolatedPosition) {
+        // Calculate base cursor position relative to original video
+        let cursorX = x + (interpolatedPosition.x * scaledWidth / video.videoWidth);
+        let cursorY = y + (interpolatedPosition.y * scaledHeight / video.videoHeight);
 
-        if (currentPositions.length > 0) {
-          const currentPosition = currentPositions[currentPositions.length - 1];
-          const cursorX = x + (currentPosition.x * scaledWidth / video.videoWidth);
-          const cursorY = y + (currentPosition.y * scaledHeight / video.videoHeight);
+        // If there's zoom, adjust cursor position using same transform
+        if (zoomState && zoomState.zoomFactor !== 1) {
+          const zoomedWidth = scaledWidth * zoomState.zoomFactor;
+          const zoomedHeight = scaledHeight * zoomState.zoomFactor;
+          const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
+          const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
 
-          ctx.save();
-          ctx.translate(cursorX, cursorY);
-          ctx.scale(5, 5);
-
-          // White outline
-          ctx.strokeStyle = 'white';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(0, 0);
-          ctx.lineTo(0, 12);
-          ctx.moveTo(0, 0);
-          ctx.lineTo(8, 8);
-          ctx.stroke();
-          
-          // Black line
-          ctx.strokeStyle = 'black';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-          
-          ctx.restore();
+          // Apply same zoom transform to cursor position
+          cursorX = (cursorX - x) * zoomState.zoomFactor + x + zoomOffsetX;
+          cursorY = (cursorY - y) * zoomState.zoomFactor + y + zoomOffsetY;
         }
+
+        ctx.save();
+        ctx.translate(cursorX, cursorY);
+        const cursorScale = (backgroundConfig.cursorScale || 2) * (zoomState?.zoomFactor || 1);
+        ctx.scale(cursorScale, cursorScale);
+
+        // Fine-tune the translation to match exact click point
+        ctx.translate(-8.2, -4.9 + 0.5);
+
+        // Main arrow shape
+        const mainArrow = new Path2D('M 8.2 4.9 L 19.8 16.5 L 13 16.5 L 12.6 16.6 L 8.2 20.9 Z');
+        
+        // Click indicator
+        const clickIndicator = new Path2D('M 17.3 21.6 L 13.7 23.1 L 9 12 L 12.7 10.5 Z');
+
+        // White outline
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 1.5;
+        ctx.stroke(mainArrow);
+        ctx.stroke(clickIndicator);
+
+        // Black fill
+        ctx.fillStyle = 'black';
+        ctx.fill(mainArrow);
+        ctx.fill(clickIndicator);
+
+        ctx.restore();
       }
       timings.cursor = performance.now() - cursorStart;
 
@@ -308,6 +317,66 @@ export class VideoRenderer {
 
   private easeOutCubic(x: number): number {
     return 1 - Math.pow(1 - x, 3);
+  }
+
+  private interpolateCursorPosition(
+    currentTime: number, 
+    mousePositions: MousePosition[],
+    backgroundConfig: BackgroundConfig
+  ): {x: number, y: number} | null {
+    if (mousePositions.length === 0) return null;
+
+    const lookAheadTime = currentTime + 1/30;
+
+    // Find the current position
+    const currentPos = mousePositions.find(pos => pos.timestamp >= lookAheadTime) || 
+                      mousePositions[mousePositions.length - 1];
+
+    // Calculate cursor speed using nearby positions
+    const prevPos = mousePositions.find(pos => pos.timestamp < currentPos.timestamp);
+    let speed = 0;
+    if (prevPos) {
+      const dx = currentPos.x - prevPos.x;
+      const dy = currentPos.y - prevPos.y;
+      const dt = currentPos.timestamp - prevPos.timestamp;
+      speed = Math.sqrt(dx * dx + dy * dy) / dt;
+    }
+
+    // Adjust window size based on speed and user smoothness preference
+    const smoothness = backgroundConfig.cursorSmoothness || 5;
+    const baseWindowSize = smoothness;  // Window size now based on smoothness
+    const windowSize = Math.max(2, baseWindowSize - (speed * 2));
+
+    const relevantPositions = mousePositions
+      .filter(pos => 
+        pos.timestamp >= lookAheadTime - (windowSize/30) && 
+        pos.timestamp <= lookAheadTime + (windowSize/30)
+      );
+
+    if (relevantPositions.length === 0) {
+      return {
+        x: currentPos.x,
+        y: currentPos.y
+      };
+    }
+
+    // Rest of the weighted average calculation...
+    let totalWeight = 0;
+    let smoothX = 0;
+    let smoothY = 0;
+
+    relevantPositions.forEach(pos => {
+      const timeDiff = Math.abs(pos.timestamp - lookAheadTime);
+      const weight = 1 / (timeDiff + 0.1);
+      totalWeight += weight;
+      smoothX += pos.x * weight;
+      smoothY += pos.y * weight;
+    });
+
+    return {
+      x: smoothX / totalWeight,
+      y: smoothY / totalWeight
+    };
   }
 }
 

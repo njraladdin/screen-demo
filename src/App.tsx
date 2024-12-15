@@ -52,7 +52,7 @@ function App() {
   });
 
   // Add this state to toggle between panels
-  const [activePanel, setActivePanel] = useState<'zoom' | 'background'>('zoom');
+  const [activePanel, setActivePanel] = useState<'zoom' | 'background' | 'cursor'>('zoom');
 
   // Add these gradient constants
   const GRADIENT_PRESETS = {
@@ -553,8 +553,9 @@ function App() {
 
             <div className="col-span-1 space-y-3">
               <div className="flex bg-[#272729] p-0.5 rounded-md">
-                <Button onClick={() => setActivePanel('zoom')} variant={activePanel === 'zoom' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'zoom' ? 'bg-[#1a1a1b] text-[#d7dadc] shadow-sm border-0' : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/50 hover:text-[#d7dadc]'}`}>Zoom</Button>
-                <Button onClick={() => setActivePanel('background')} variant={activePanel === 'background' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'background' ? 'bg-[#1a1a1b] text-[#d7dadc] shadow-sm border-0' : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/50 hover:text-[#d7dadc]'}`}>Background</Button>
+                <Button onClick={() => setActivePanel('zoom')} variant={activePanel === 'zoom' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'zoom' ? 'bg-[#1a1a1b] text-[#d7dadc]' : 'bg-transparent text-[#818384]'}`}>Zoom</Button>
+                <Button onClick={() => setActivePanel('background')} variant={activePanel === 'background' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'background' ? 'bg-[#1a1a1b] text-[#d7dadc]' : 'bg-transparent text-[#818384]'}`}>Background</Button>
+                <Button onClick={() => setActivePanel('cursor')} variant={activePanel === 'cursor' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'cursor' ? 'bg-[#1a1a1b] text-[#d7dadc]' : 'bg-transparent text-[#818384]'}`}>Cursor</Button>
               </div>
 
               {activePanel === 'zoom' ? (
@@ -597,7 +598,7 @@ function App() {
                     </div>
                   )}
                 </>
-              ) : (
+              ) : activePanel === 'background' ? (
                 <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
                   <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Background & Layout</h2>
                   <div className="space-y-4">
@@ -616,6 +617,42 @@ function App() {
                           <button key={key} onClick={() => setBackgroundConfig(prev => ({...prev, backgroundType: key as BackgroundConfig['backgroundType']}))} className={`h-14 rounded-lg transition-all ${gradient} ${backgroundConfig.backgroundType === key ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'}`} />
                         ))}
                       </div>
+                    </div>
+                  </div>
+                </div>
+              ) : activePanel === 'cursor' && (
+                <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
+                  <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Cursor Settings</h2>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                        <span>Cursor Size</span>
+                        <span className="text-[#818384]">{backgroundConfig.cursorScale || 2}x</span>
+                      </label>
+                      <input 
+                        type="range" 
+                        min="1" 
+                        max="4" 
+                        step="0.1" 
+                        value={backgroundConfig.cursorScale || 2} 
+                        onChange={(e) => setBackgroundConfig(prev => ({...prev, cursorScale: Number(e.target.value)}))}
+                        className="w-full accent-[#0079d3]" 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                        <span>Movement Smoothing</span>
+                        <span className="text-[#818384]">{backgroundConfig.cursorSmoothness || 5}</span>
+                      </label>
+                      <input 
+                        type="range" 
+                        min="0" 
+                        max="10" 
+                        step="1" 
+                        value={backgroundConfig.cursorSmoothness || 5} 
+                        onChange={(e) => setBackgroundConfig(prev => ({...prev, cursorSmoothness: Number(e.target.value)}))}
+                        className="w-full accent-[#0079d3]" 
+                      />
                     </div>
                   </div>
                 </div>

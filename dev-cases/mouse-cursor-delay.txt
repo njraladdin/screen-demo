@@ -1,0 +1,43 @@
+Mouse Cursor Delay Fix
+=====================
+
+Problem
+-------
+Mouse cursor overlay appearing to trail behind actual cursor position during video playback.
+
+Root Cause
+----------
+Original approach used a backward-looking time window, causing inherent delay:
+
+const timeWindow = 1/30;
+currentPositions = mousePositions.filter(pos => 
+  pos.timestamp >= currentVideoTime - timeWindow && 
+  pos.timestamp <= currentVideoTime
+);
+
+Attempted Solutions
+------------------
+1. Linear Interpolation between prev/next positions
+   Result: Reduced delay but still noticeable
+
+2. Finding closest position to current time
+   Result: Better but still some delay
+
+Final Solution
+-------------
+Look ahead approach - always show future position:
+
+const lookAheadTime = currentTime + 1/30;
+const aheadPosition = mousePositions.find(pos => pos.timestamp >= lookAheadTime);
+const position = aheadPosition || mousePositions[mousePositions.length - 1];
+
+Why It Works
+-----------
+- Instead of looking at past positions, we look ahead by 1 frame
+- Compensates for natural playback delay
+- Uses future position to make cursor appear more responsive
+- Falls back to last position if at end of recording
+
+Files Changed
+------------
+src/lib/videoRenderer.ts

@@ -1,6 +1,6 @@
 
 
-
+- fix cursor delay 
 
 -make mosue overlay work in zooms 
 - add automatic mouse zoom feature 
