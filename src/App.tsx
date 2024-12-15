@@ -697,17 +697,19 @@ function App() {
                 {segment?.zoomKeyframes.map((keyframe, index) => {
                   const active = editingKeyframeId === index;
                   
-                  // Get previous and next keyframes
+                  // Get previous keyframe
                   const prevKeyframe = index > 0 ? segment.zoomKeyframes[index - 1] : null;
-                  const nextKeyframe = segment.zoomKeyframes[index + 1];
                   
-                  // Calculate range start and end
-                  // If there's a previous keyframe, start at that keyframe
-                  // Otherwise, start 0.5s before current keyframe
-                  const rangeStart = prevKeyframe 
-                    ? prevKeyframe.time 
-                    : Math.max(0, keyframe.time - 0.5);
-                    
+                  // Calculate range start
+                  let rangeStart;
+                  if (prevKeyframe && (keyframe.time - prevKeyframe.time) <= 1.0) {
+                    // If previous keyframe exists and is within 1 second, connect to it
+                    rangeStart = prevKeyframe.time;
+                  } else {
+                    // Otherwise, start range 1 second before current keyframe
+                    rangeStart = Math.max(0, keyframe.time - 1.0);
+                  }
+                  
                   // Range always ends at current keyframe
                   const rangeEnd = keyframe.time;
                   
