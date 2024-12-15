@@ -1,0 +1,40 @@
+Mouse Overlay Flickering Issue 
+Date: December 2024
+
+Problem:
+- Mouse overlay flickered/disappeared on first video playback
+- Previous recording's overlay appeared alongside current recording
+- Only happened after first recording
+
+Root Cause:
+Video was marked as "ready" before canvas finished drawing the first frame. Since drawFrame() is asynchronous, setting isVideoReady immediately after calling it allowed playback to start before canvas was actually ready.
+
+Fix:
+Before (broken):
+const handleLoadedData = () => {
+    video.currentTime = 0;
+    drawFrame();
+    setIsVideoReady(true);  // Too early!
+};
+
+After (fixed):
+const handleLoadedData = () => {
+    video.currentTime = 0;
+    requestAnimationFrame(() => {
+        drawFrame();
+        setIsVideoReady(true);  // Only after frame is drawn
+    });
+};
+
+Key Learnings:
+1. Canvas operations are async - wait for them to complete
+2. Use requestAnimationFrame() for initial canvas setup
+3. State transitions should happen after confirming operations are done
+4. Clear all relevant states when starting new recordings
+5. Add ready-state guards before allowing playback
+
+Prevention:
+- Always wrap initial canvas operations in requestAnimationFrame()
+- Add isReady checks before allowing video playback
+- Clear mouse positions and other states before new recordings
+- Use loading states to prevent premature interactions 

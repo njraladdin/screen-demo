@@ -1,0 +1,48 @@
+Video Export Getting Stuck
+=========================
+
+Problem
+-------
+Video export process getting stuck at "Processing video..." despite progress reaching ~94%.
+
+Root Cause
+----------
+1. Floating point precision issue in end condition:
+   // Old code - problematic end check
+   const isNearEnd = video.currentTime + 0.1 >= segment.trimEnd;
+   
+   Issues:
+   - Adding 0.1 to check "near end" is imprecise
+   - video.currentTime might never exactly reach segment.trimEnd
+   - Last reported progress was 94.5% before getting stuck
+
+2. Progress calculation:
+   // Old code - could never reach exactly 100%
+   onProgress?.(isNearEnd ? 100 : Math.min(progress, 100));
+
+Fix
+---
+1. Use absolute difference for end check:
+   const isAtEnd = Math.abs(video.currentTime - segment.trimEnd) < 0.1;
+
+2. Cap progress at 99.9% until complete:
+   onProgress?.(isAtEnd ? 100 : Math.min(currentProgress, 99.9));
+
+3. Added logging to track export state:
+   console.log('[VideoExporter] Progress:', {
+     currentTime: video.currentTime,
+     trimEnd: segment.trimEnd,
+     progress: currentProgress,
+     isAtEnd
+   });
+
+Verification
+-----------
+- Export completes successfully
+- Progress reaches 100%
+- MediaRecorder stops properly
+- Download triggers as expected
+
+Files Changed
+------------
+src/lib/videoExporter.ts 

@@ -1,0 +1,61 @@
+Video Playback Performance Issue
+==============================
+
+Problem
+-------
+Video playback experiencing frame drops and stuttering when rendering recorded video to canvas with mouse overlay.
+
+Root Cause
+----------
+1. Redundant render calls from multiple sources:
+   videoController.ts:
+   - handleTimeUpdate() calling renderFrame()
+   - handlePlay() starting new animation loop
+   - handleLoadedData() initiating another render cycle
+
+   videoRenderer.ts:
+   - Running its own animation loop via startAnimation()
+   - Each loop competing to draw frames
+
+2. Inefficient frame timing code:
+   if (timeSinceLastFrame < 8) { // Attempting 120fps cap
+     return;
+   }
+   this.lastFrameTime = now;
+
+3. Broken animation loop:
+   if (!video.paused) {
+     drawFrame();
+     requestAnimationFrame(animate);
+   }
+   // Animation stops/starts on pause causing frame timing issues
+
+Fix
+---
+1. Removed render calls from VideoController events:
+   - Deleted renderFrame() calls from timeUpdate
+   - Removed animation start from play/pause handlers
+   - Single render loop in VideoRenderer
+
+2. Eliminated manual frame timing:
+   // Deleted timing check, let rAF handle sync
+   drawFrame(renderContext);
+   requestAnimationFrame(animate);
+
+3. Continuous animation loop:
+   const animate = () => {
+     drawFrame(renderContext);
+     requestAnimationFrame(animate);
+   };
+
+Verification
+-----------
+- Playback shows consistent 60fps
+- No frame drops during play/pause transitions
+- CPU usage decreased due to eliminated redundant renders
+- Mouse overlay renders smoothly with video frames
+
+Files Changed
+------------
+src/lib/videoController.ts
+src/lib/videoRenderer.ts
