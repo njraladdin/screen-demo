@@ -575,6 +575,47 @@ function App() {
     findActiveKeyframe();
   }, [currentTime, segment, isVideoReady]);
 
+  // Inside the App component, add this new helper function
+  const renderPlaceholder = () => {
+    return (
+      <div className="absolute inset-0 bg-[#1a1a1b] flex flex-col items-center justify-center">
+        {/* Grid pattern background */}
+        <div className="absolute inset-0 opacity-5">
+          <div className="w-full h-full" style={{
+            backgroundImage: `
+              linear-gradient(to right, #fff 1px, transparent 1px),
+              linear-gradient(to bottom, #fff 1px, transparent 1px)
+            `,
+            backgroundSize: '20px 20px'
+          }} />
+        </div>
+        
+        {isLoadingVideo ? (
+          // Loading state after recording
+          <div className="flex flex-col items-center">
+            <Loader2 className="w-12 h-12 text-[#0079d3] animate-spin mb-4" />
+            <p className="text-[#d7dadc] font-medium">Processing Video</p>
+            <p className="text-[#818384] text-sm mt-1">This may take a few moments...</p>
+          </div>
+        ) : isRecording ? (
+          // Recording state
+          <div className="flex flex-col items-center">
+            <div className="w-4 h-4 rounded-full bg-red-500 animate-pulse mb-4" />
+            <p className="text-[#d7dadc] font-medium">Recording in progress...</p>
+            <p className="text-[#818384] text-sm mt-1">Screen is being captured</p>
+          </div>
+        ) : (
+          // No video state
+          <div className="flex flex-col items-center">
+            <Video className="w-12 h-12 text-[#343536] mb-4" />
+            <p className="text-[#d7dadc] font-medium">No Video Selected</p>
+            <p className="text-[#818384] text-sm mt-1">Click 'Start Recording' to begin</p>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
       <header className="bg-[#1a1a1b] border-b border-[#343536]">
@@ -603,7 +644,7 @@ function App() {
 
       <main className="max-w-6xl mx-auto px-4 py-6">
         {error && <p className="text-red-500 mb-4">{error}</p>}
-        {isRecording && <p className="text-[#0079d3] mb-4">Recording in progress...</p>}
+
         <div className="space-y-6">
           <div className="grid grid-cols-4 gap-6 items-start">
             <div className="col-span-3 rounded-lg">
@@ -611,13 +652,32 @@ function App() {
                 <div className="absolute inset-0 flex items-center justify-center">
                   <canvas ref={canvasRef} className="w-full h-full object-contain" />
                   <video ref={videoRef} className="hidden" playsInline preload="auto" crossOrigin="anonymous" />
+                  {(!currentVideo || isRecording || isLoadingVideo) && renderPlaceholder()}
                 </div>
-                <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-2 bg-black/30 rounded-full p-2 backdrop-blur-sm z-10">
-                  <Button onClick={togglePlayPause} disabled={isProcessing || !currentVideo || !isVideoReady} variant="ghost" className={`transition-colors ${!currentVideo || isProcessing || !isVideoReady ? 'text-gray-500 bg-gray-600/50 hover:bg-gray-600/50 cursor-not-allowed' : 'text-white hover:bg-white/20 hover:text-white'}`}>
-                    {isPlaying ? <Pause className="w-6 h-6" /> : <Play className="w-6 h-6" />}
-                  </Button>
-                  <div className="text-white/90 px-2 flex items-center">{formatTime(currentTime)} / {formatTime(duration)}</div>
-                </div>
+                {currentVideo && !isRecording && !isLoadingVideo && (
+                  <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-3 bg-black/80 rounded-full px-4 py-2 backdrop-blur-sm z-10">
+                    <Button 
+                      onClick={togglePlayPause} 
+                      disabled={isProcessing || !isVideoReady} 
+                      variant="ghost" 
+                      size="icon"
+                      className={`w-8 h-8 rounded-full transition-colors text-white bg-transparent hover:text-white hover:bg-transparent ${
+                        isProcessing || !isVideoReady 
+                          ? 'opacity-50 cursor-not-allowed' 
+                          : ''
+                      }`}
+                    >
+                      {isPlaying ? (
+                        <Pause className="w-4 h-4" />
+                      ) : (
+                        <Play className="w-4 h-4 ml-0.5" />
+                      )}
+                    </Button>
+                    <div className="text-white/90 text-sm font-medium">
+                      {formatTime(currentTime)} / {formatTime(duration)}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
