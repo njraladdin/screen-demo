@@ -14,6 +14,13 @@ export interface RenderOptions {
   exportMode?: boolean;
 }
 
+interface CursorAnimationState {
+  startTime: number;
+  isAnimating: boolean;
+  progress: number;
+  isSquishing: boolean;
+}
+
 export class VideoRenderer {
   private animationFrame: number | null = null;
   private isDrawing: boolean = false;
@@ -21,6 +28,14 @@ export class VideoRenderer {
   private frameCount: number = 0;
   private lastFpsCheck: number = performance.now();
   private drawTimes: number[] = []; // Track last 60 frame times
+  private cursorAnimation: CursorAnimationState = {
+    startTime: 0,
+    isAnimating: false,
+    progress: 0,
+    isSquishing: false
+  };
+  private SQUISH_DURATION = 100; // Faster initial squish for snappier feel
+  private RELEASE_DURATION = 600; // Longer release for spring effect
 
   private readonly DEFAULT_STATE: ZoomKeyframe = {
     time: 0,
@@ -43,6 +58,12 @@ export class VideoRenderer {
     this.drawTimes = [];
 
     const animate = () => {
+      // Only continue animation if video is playing
+      if (renderContext.video.paused) {
+        this.stopAnimation();
+        return;
+      }
+
       // Draw frame regardless of video state
       this.drawFrame(renderContext)
         .catch(err => console.error('[VideoRenderer] Draw error:', err));
@@ -66,7 +87,7 @@ export class VideoRenderer {
     options: RenderOptions = {}
   ): Promise<void> => {
     if (this.isDrawing) {
-      console.log('[VideoRenderer] Frame skipped - still drawing previous frame');
+      // Silently skip frame if still drawing
       return;
     }
     
@@ -75,7 +96,6 @@ export class VideoRenderer {
 
     // Less strict about readyState
     if (video.readyState < 2) {
-      console.log('[VideoRenderer] Frame skipped - video not ready:', video.readyState);
       return;
     }
 
@@ -184,32 +204,15 @@ export class VideoRenderer {
           cursorY = (cursorY - y) * zoomState.zoomFactor + y + zoomOffsetY;
         }
 
-        ctx.save();
-        ctx.translate(cursorX, cursorY);
         const cursorScale = (backgroundConfig.cursorScale || 2) * (zoomState?.zoomFactor || 1);
-        ctx.scale(cursorScale, cursorScale);
 
-        // Fine-tune the translation to match exact click point
-        ctx.translate(-8.2, -4.9 + 0.5);
-
-        // Main arrow shape
-        const mainArrow = new Path2D('M 8.2 4.9 L 19.8 16.5 L 13 16.5 L 12.6 16.6 L 8.2 20.9 Z');
-        
-        // Click indicator
-        const clickIndicator = new Path2D('M 17.3 21.6 L 13.7 23.1 L 9 12 L 12.7 10.5 Z');
-
-        // White outline
-        ctx.strokeStyle = 'white';
-        ctx.lineWidth = 1.5;
-        ctx.stroke(mainArrow);
-        ctx.stroke(clickIndicator);
-
-        // Black fill
-        ctx.fillStyle = 'black';
-        ctx.fill(mainArrow);
-        ctx.fill(clickIndicator);
-
-        ctx.restore();
+        this.drawMouseCursor(
+          ctx,
+          cursorX,
+          cursorY,
+          interpolatedPosition.isClicked || false,
+          cursorScale
+        );
       }
       timings.cursor = performance.now() - cursorStart;
 
@@ -320,7 +323,7 @@ export class VideoRenderer {
     currentTime: number, 
     mousePositions: MousePosition[],
     backgroundConfig: BackgroundConfig
-  ): {x: number, y: number} | null {
+  ): {x: number, y: number, isClicked: boolean} | null {
     if (mousePositions.length === 0) return null;
 
     const lookAheadTime = currentTime + 1/30;
@@ -328,6 +331,11 @@ export class VideoRenderer {
     // Find the current position
     const currentPos = mousePositions.find(pos => pos.timestamp >= lookAheadTime) || 
                       mousePositions[mousePositions.length - 1];
+
+    // Debug log when we find a clicked position
+    if (currentPos.isClicked) {
+      console.log('[VideoRenderer] Found clicked position at time:', currentPos.timestamp);
+    }
 
     // Calculate cursor speed using nearby positions
     const prevPos = mousePositions.find(pos => pos.timestamp < currentPos.timestamp);
@@ -353,7 +361,8 @@ export class VideoRenderer {
     if (relevantPositions.length === 0) {
       return {
         x: currentPos.x,
-        y: currentPos.y
+        y: currentPos.y,
+        isClicked: currentPos.isClicked || false
       };
     }
 
@@ -372,8 +381,95 @@ export class VideoRenderer {
 
     return {
       x: smoothX / totalWeight,
-      y: smoothY / totalWeight
+      y: smoothY / totalWeight,
+      isClicked: currentPos.isClicked || false
     };
+  }
+
+  private drawMouseCursor(ctx: CanvasRenderingContext2D, x: number, y: number, isClicked: boolean, scale: number = 2) {
+    ctx.save();
+    ctx.translate(x, y);
+    const cursorScale = scale;
+    
+    // First apply the base cursor scale normally
+    ctx.scale(cursorScale, cursorScale);
+    
+    // Adjust translation for better click point alignment
+    ctx.translate(-8, -5);
+    
+    // Handle click animation state
+    if (isClicked && !this.cursorAnimation.isAnimating) {
+      this.cursorAnimation.startTime = performance.now();
+      this.cursorAnimation.isAnimating = true;
+      this.cursorAnimation.progress = 0;
+      this.cursorAnimation.isSquishing = true;
+    }
+    
+    // Handle animation state changes
+    if (this.cursorAnimation.isAnimating) {
+      const elapsed = performance.now() - this.cursorAnimation.startTime;
+      const duration = this.cursorAnimation.isSquishing ? this.SQUISH_DURATION : this.RELEASE_DURATION;
+      this.cursorAnimation.progress = Math.min(elapsed / duration, 1);
+      
+      if (this.cursorAnimation.progress >= 1 && this.cursorAnimation.isSquishing && isClicked) {
+        // Switch to release phase
+        this.cursorAnimation.startTime = performance.now();
+        this.cursorAnimation.progress = 0;
+        this.cursorAnimation.isSquishing = false;
+      } else if (this.cursorAnimation.progress >= 1) {
+        this.cursorAnimation.isAnimating = false;
+      }
+    }
+    
+    // Apply scale animation
+    if (this.cursorAnimation.isAnimating) {
+      const t = this.cursorAnimation.progress;
+      let scaleAmount;
+      
+      if (this.cursorAnimation.isSquishing) {
+        // Quick scale down with slight anticipation
+        const easeInBack = t => {
+          const c1 = 1.70158;
+          const c3 = c1 + 1;
+          return c3 * t * t * t - c1 * t * t;
+        };
+        scaleAmount = 1 - (0.25 * easeInBack(t));  // Scale down to 75%
+      } else {
+        // Springy bounce back
+        const springyBounce = t => {
+          // More pronounced spring effect
+          const decay = Math.exp(-t * 6);
+          const oscillation = Math.sin(t * 12);
+          return 1 + (decay * oscillation * 0.2); // 0.2 controls bounce magnitude
+        };
+        
+        // Combine smooth return with spring effect
+        const baseReturn = 0.75 + (0.25 * (1 - Math.exp(-t * 3)));
+        scaleAmount = baseReturn * springyBounce(t);
+      }
+      
+      // Apply uniform scaling with spring effect
+      ctx.scale(scaleAmount, scaleAmount);
+    }
+
+    // Main arrow shape
+    const mainArrow = new Path2D('M 8.2 4.9 L 19.8 16.5 L 13 16.5 L 12.6 16.6 L 8.2 20.9 Z');
+    
+    // Click indicator
+    const clickIndicator = new Path2D('M 17.3 21.6 L 13.7 23.1 L 9 12 L 12.7 10.5 Z');
+
+    // White outline
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 1.5;
+    ctx.stroke(mainArrow);
+    ctx.stroke(clickIndicator);
+
+    // Black fill
+    ctx.fillStyle = 'black';
+    ctx.fill(mainArrow);
+    ctx.fill(clickIndicator);
+
+    ctx.restore();
   }
 }
 

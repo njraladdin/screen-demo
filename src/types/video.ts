@@ -25,4 +25,5 @@ export interface MousePosition {
   x: number;
   y: number;
   timestamp: number;
+  isClicked?: boolean;
 } 

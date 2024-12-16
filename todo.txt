@@ -1,7 +1,6 @@
 
 
-- fix cursor delay 
 
--make mosue overlay work in zooms 
-- add automatic mouse zoom feature 
-
+-fix recording quality, some artfiacts appearing 
+- fix loading after recording taking too long 
+-small ui improvements 

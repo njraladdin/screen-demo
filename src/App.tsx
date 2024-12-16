@@ -110,7 +110,10 @@ function App() {
     const video = videoRef.current;
     if (!video) return;
 
-    if (!video.paused) {
+    // Start animation when playing, render single frame when paused
+    if (video.paused) {
+      renderFrame();
+    } else {
       const renderContext = {
         video,
         canvas: canvasRef.current!,
@@ -204,9 +207,6 @@ function App() {
       setIsLoadingVideo(true);
       setIsVideoReady(false);
 
-      // Clear existing mouse positions before getting new ones
-      setMousePositions([]);
-
       const [videoData, mouseData] = await invoke<[number[], MousePosition[]]>("stop_recording");
 
       console.log('Received new mouse positions:', {
@@ -225,8 +225,20 @@ function App() {
       setCurrentVideo(url);
 
       if (videoRef.current) {
-        videoRef.current.src = url;
-        videoRef.current.load();
+        // Add loadeddata event listener before setting the source
+        const video = videoRef.current;
+        const loadFirstFrame = () => {
+          // Ensure we're at the start of the video
+          video.currentTime = 0;
+          // Render the first frame
+          renderFrame();
+          // Remove the event listener
+          video.removeEventListener('loadeddata', loadFirstFrame);
+        };
+
+        video.addEventListener('loadeddata', loadFirstFrame);
+        video.src = url;
+        video.load();
       }
 
     } catch (err) {
@@ -458,7 +470,7 @@ function App() {
     setEditingKeyframeId(newKeyframes.indexOf(newKeyframe));
   };
 
-  // Add throttled update function for zoom configuration
+  // Update the throttled update function for zoom configuration
   const throttledUpdateZoom = useThrottle((updates: Partial<ZoomKeyframe>) => {
     if (!segment || editingKeyframeId === null) return;
 
@@ -472,6 +484,13 @@ function App() {
       ...segment,
       zoomKeyframes: updatedKeyframes
     });
+
+    // Seek to the keyframe's time to show the final zoom state
+    if (videoRef.current) {
+      const keyframeTime = updatedKeyframes[editingKeyframeId].time;
+      videoRef.current.currentTime = keyframeTime;
+      setCurrentTime(keyframeTime);
+    }
 
     // Force a redraw to show the changes
     requestAnimationFrame(() => {
@@ -513,6 +532,55 @@ function App() {
       }
     };
   }, [isRecording]);
+
+  // Add this effect after the other useEffect hooks
+  useEffect(() => {
+    if (!segment || !isVideoReady) return;
+
+    // Find the active keyframe based on current time
+    const findActiveKeyframe = () => {
+      const sortedKeyframes = [...segment.zoomKeyframes].sort((a, b) => a.time - b.time);
+      
+      for (let i = 0; i < sortedKeyframes.length; i++) {
+        const keyframe = sortedKeyframes[i];
+        const nextKeyframe = sortedKeyframes[i + 1];
+        
+        // Calculate range start and end
+        let rangeStart;
+        const prevKeyframe = i > 0 ? sortedKeyframes[i - 1] : null;
+        
+        if (prevKeyframe && (keyframe.time - prevKeyframe.time) <= 1.0) {
+          // If previous keyframe exists and is within 1 second, connect to it
+          rangeStart = prevKeyframe.time;
+        } else {
+          // Otherwise, start range 1 second before current keyframe
+          rangeStart = Math.max(0, keyframe.time - 1.0);
+        }
+        
+        const rangeEnd = keyframe.time;
+        
+        // Check if current time is within this keyframe's range
+        if (currentTime >= rangeStart && currentTime <= rangeEnd) {
+          // Only update if we're not already editing this keyframe
+          if (editingKeyframeId !== i) {
+            setEditingKeyframeId(i);
+            setZoomFactor(keyframe.zoomFactor);
+            if (activePanel !== 'zoom') {
+              setActivePanel('zoom');
+            }
+          }
+          return;
+        }
+      }
+      
+      // If we're not in any keyframe's range, deselect
+      if (editingKeyframeId !== null) {
+        setEditingKeyframeId(null);
+      }
+    };
+
+    findActiveKeyframe();
+  }, [currentTime, segment, isVideoReady]);
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">

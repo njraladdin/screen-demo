@@ -21,11 +21,14 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+use rdev::{listen, Event, EventType};
 
 // Global static variables that can be safely accessed from multiple threads
 static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
 static mut VIDEO_PATH: Option<String> = None;  // Stores the path where video will be saved
 static SHOULD_STOP: AtomicBool = AtomicBool::new(false);  // Signals when to stop recording
+static IS_MOUSE_CLICKED: AtomicBool = AtomicBool::new(false);
+static SHOULD_LISTEN_CLICKS: AtomicBool = AtomicBool::new(false);
 
 // Add these new structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +36,7 @@ pub struct MousePosition {
     x: i32,
     y: i32,
     timestamp: f64,
+    isClicked: bool,
 }
 
 // Add this global static for storing mouse positions
@@ -101,17 +105,16 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
             unsafe {
                 let mut point = POINT::default();
                 if GetCursorPos(&mut point).as_bool() {
-                    println!("Raw cursor position: ({}, {})", point.x, point.y);
-                    println!("Using monitor offset: ({}, {})", MONITOR_X, MONITOR_Y);
-                    
-                    // Adjust coordinates relative to monitor position
+                    let is_clicked = IS_MOUSE_CLICKED.load(Ordering::SeqCst);
+                    if is_clicked {
+                        println!("Capturing clicked position at ({}, {})", point.x, point.y);
+                    }
                     let mouse_pos = MousePosition {
                         x: point.x - MONITOR_X,
                         y: point.y - MONITOR_Y,
                         timestamp: self.start.elapsed().as_secs_f64(),
+                        isClicked: is_clicked,
                     };
-                    
-                    println!("Adjusted mouse position: ({}, {})", mouse_pos.x, mouse_pos.y);
                     
                     if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
                         positions.push_back(mouse_pos);
@@ -189,6 +192,36 @@ async fn start_recording() -> Result<(), String> {
         VIDEO_PATH = None;
     }
 
+    // Signal that we should start listening for clicks
+    SHOULD_LISTEN_CLICKS.store(true, Ordering::SeqCst);
+
+    // Start mouse click listener
+    thread::spawn(|| {
+        if let Err(error) = listen(|event| {
+            // Check if we should still be listening
+            if !SHOULD_LISTEN_CLICKS.load(Ordering::SeqCst) {
+                return;
+            }
+            match event.event_type {
+                EventType::ButtonPress(button) => {
+                    if button == rdev::Button::Left {
+                        IS_MOUSE_CLICKED.store(true, Ordering::SeqCst);
+                        println!("Mouse clicked!");
+                    }
+                }
+                EventType::ButtonRelease(button) => {
+                    if button == rdev::Button::Left {
+                        IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
+                        println!("Mouse released!");
+                    }
+                }
+                _ => {}
+            }
+        }) {
+            eprintln!("Error: {:?}", error);
+        }
+    });
+
     // Spawn new thread for capture process
     thread::spawn(move || {
         CaptureHandler::start(settings).expect("Screen capture failed");
@@ -218,9 +251,18 @@ async fn stop_recording() -> Result<(Vec<u8>, Vec<MousePosition>), String> {
     // Wait a bit longer for encoder to finish and cleanup
     thread::sleep(std::time::Duration::from_millis(500));
     
+    // Stop listening for clicks
+    SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
+    IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
+
     // Get mouse positions
     let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
         let positions_vec: Vec<MousePosition> = positions.drain(..).collect();
+        let clicked_positions: Vec<&MousePosition> = positions_vec.iter().filter(|p| p.isClicked).collect();
+        println!("Found {} clicked positions in total", clicked_positions.len());
+        for pos in clicked_positions.iter() {
+            println!("Clicked position: {:?}", pos);
+        }
         println!("Collected {} mouse positions", positions_vec.len());
         positions_vec
     } else {

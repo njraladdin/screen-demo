@@ -31,4 +31,5 @@ windows = { version = "0.48", features = [
     "Win32_Graphics_Gdi",
 ] }
 lazy_static = "1.4.0"
+rdev = "0.5.3"
 
