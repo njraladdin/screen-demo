@@ -620,7 +620,7 @@ function App() {
     <div className="min-h-screen bg-[#1a1a1b]">
       <header className="bg-[#1a1a1b] border-b border-[#343536]">
         <div className="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-[#d7dadc]">Video Editor</h1>
+          <h1 className="text-2xl font-bold text-[#d7dadc]">Screen Demo</h1>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <Button onClick={isRecording ? handleStopRecording : handleStartRecording} disabled={isProcessing || isLoadingVideo} className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${isRecording ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}>
@@ -744,7 +744,7 @@ function App() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
-                        <span>Border Radius</span>
+                        <span>Roundness</span>
                         <span className="text-[#818384]">{backgroundConfig.borderRadius}px</span>
                       </label>
                       <input type="range" min="0" max="64" value={backgroundConfig.borderRadius} 

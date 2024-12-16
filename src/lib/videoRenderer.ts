@@ -250,24 +250,56 @@ export class VideoRenderer {
   ): string | CanvasGradient {
     switch (type) {
       case 'gradient1': {
-        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
-        gradient.addColorStop(0, '#2563eb');
-        gradient.addColorStop(1, '#7c3aed');
+        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, ctx.canvas.height);
+        gradient.addColorStop(0, '#ff9a9e');
+        gradient.addColorStop(0.99, '#fad0c4');
+        gradient.addColorStop(1, '#fad0c4');
         return gradient;
       }
       case 'gradient2': {
-        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
-        gradient.addColorStop(0, '#fb7185');
-        gradient.addColorStop(1, '#fdba74');
+        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width * 0.866, ctx.canvas.height); // 120deg
+        gradient.addColorStop(0, '#84fab0');
+        gradient.addColorStop(1, '#8fd3f4');
         return gradient;
       }
       case 'gradient3': {
-        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
-        gradient.addColorStop(0, '#10b981');
-        gradient.addColorStop(1, '#2dd4bf');
+        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width * 0.866, ctx.canvas.height); // 120deg
+        gradient.addColorStop(0, '#f093fb');
+        gradient.addColorStop(1, '#f5576c');
         return gradient;
       }
-      case 'solid':
+      case 'solid': {
+        // Create the complex gradient for the "solid" background
+        const overlay1 = ctx.createLinearGradient(0, 0, 0, ctx.canvas.height);
+        overlay1.addColorStop(0, 'rgba(255,255,255,0.15)');
+        overlay1.addColorStop(1, 'rgba(0,0,0,0.15)');
+
+        const centerX = ctx.canvas.width / 2;
+        const overlay2 = ctx.createRadialGradient(
+          centerX, 0, 0,
+          centerX, 0, ctx.canvas.height * 1.2
+        );
+        overlay2.addColorStop(0, 'rgba(255,255,255,0.4)');
+        overlay2.addColorStop(1, 'rgba(0,0,0,0.4)');
+
+        // Draw the base color first
+        ctx.fillStyle = '#989898';
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+        // Apply the overlays with multiply blend mode
+        ctx.globalCompositeOperation = 'multiply';
+        
+        ctx.fillStyle = overlay1;
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        
+        ctx.fillStyle = overlay2;
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+        
+        // Reset composite operation
+        ctx.globalCompositeOperation = 'source-over';
+        
+        return 'rgba(0,0,0,0)'; // Return transparent as we've already filled
+      }
       default:
         return '#000000';
     }
