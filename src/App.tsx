@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download } from "lucide-react";
+import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2 } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
 import { videoRenderer } from '@/lib/videoRenderer';
@@ -217,22 +217,15 @@ function App() {
       setMousePositions(mouseData);
 
       const uint8Array = new Uint8Array(videoData);
-      const blob = new Blob([uint8Array], {
-        type: "video/mp4; codecs=avc1.42E01E,mp4a.40.2"
-      });
-
+      const blob = new Blob([uint8Array], { type: "video/mp4" });
       const url = URL.createObjectURL(blob);
       setCurrentVideo(url);
 
       if (videoRef.current) {
-        // Add loadeddata event listener before setting the source
         const video = videoRef.current;
         const loadFirstFrame = () => {
-          // Ensure we're at the start of the video
           video.currentTime = 0;
-          // Render the first frame
           renderFrame();
-          // Remove the event listener
           video.removeEventListener('loadeddata', loadFirstFrame);
         };
 
@@ -425,7 +418,8 @@ function App() {
         onProgress: (progress) => {
           console.log(`[App] Export progress: ${progress.toFixed(1)}%`);
           setExportProgress(progress);
-        }
+        },
+        format: 'mp4'
       });
 
       console.log('[App] Export completed successfully');
@@ -543,7 +537,6 @@ function App() {
       
       for (let i = 0; i < sortedKeyframes.length; i++) {
         const keyframe = sortedKeyframes[i];
-        const nextKeyframe = sortedKeyframes[i + 1];
         
         // Calculate range start and end
         let rangeStart;
@@ -590,7 +583,16 @@ function App() {
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
               <Button onClick={isRecording ? handleStopRecording : handleStartRecording} disabled={isProcessing || isLoadingVideo} className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${isRecording ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}>
-                {isRecording ? <><StopCircle className="w-4 h-4 mr-2" />Stop Recording</> : isLoadingVideo ? <><span className="animate-spin mr-2"></span>Loading Video...</> : <><Video className="w-4 h-4 mr-2" />{currentVideo ? 'New Recording' : 'Start Recording'}</>}
+                {isRecording ? (
+                  <><StopCircle className="w-4 h-4 mr-2" />Stop Recording</>
+                ) : isLoadingVideo ? (
+                  <div className="flex items-center">
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Loading Video...
+                  </div>
+                ) : (
+                  <><Video className="w-4 h-4 mr-2" />{currentVideo ? 'New Recording' : 'Start Recording'}</>
+                )}
               </Button>
               {isRecording && <span className="text-red-500 font-medium">{formatTime(recordingDuration)}</span>}
             </div>
@@ -603,8 +605,8 @@ function App() {
         {error && <p className="text-red-500 mb-4">{error}</p>}
         {isRecording && <p className="text-[#0079d3] mb-4">Recording in progress...</p>}
         <div className="space-y-6">
-          <div className="grid grid-cols-3 gap-6 items-start">
-            <div className="col-span-2 rounded-lg">
+          <div className="grid grid-cols-4 gap-6 items-start">
+            <div className="col-span-3 rounded-lg">
               <div className="aspect-video relative">
                 <div className="absolute inset-0 flex items-center justify-center">
                   <canvas ref={canvasRef} className="w-full h-full object-contain" />
@@ -671,18 +673,48 @@ function App() {
                   <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Background & Layout</h2>
                   <div className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Video Size</span><span className="text-[#818384]">{backgroundConfig.scale}%</span></label>
-                      <input type="range" min="50" max="100" value={backgroundConfig.scale} onChange={(e) => {setBackgroundConfig(prev => ({...prev, scale: Number(e.target.value)}));}} className="w-full accent-[#0079d3]" />
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                        <span>Video Size</span>
+                        <span className="text-[#818384]">{backgroundConfig.scale}%</span>
+                      </label>
+                      <input type="range" min="50" max="100" value={backgroundConfig.scale} 
+                        onChange={(e) => setBackgroundConfig(prev => ({...prev, scale: Number(e.target.value)}))} 
+                        className="w-full accent-[#0079d3]" 
+                      />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Border Radius</span><span className="text-[#818384]">{backgroundConfig.borderRadius}px</span></label>
-                      <input type="range" min="0" max="64" value={backgroundConfig.borderRadius} onChange={(e) => {setBackgroundConfig(prev => ({...prev, borderRadius: Number(e.target.value)}));}} className="w-full accent-[#0079d3]" />
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                        <span>Border Radius</span>
+                        <span className="text-[#818384]">{backgroundConfig.borderRadius}px</span>
+                      </label>
+                      <input type="range" min="0" max="64" value={backgroundConfig.borderRadius} 
+                        onChange={(e) => setBackgroundConfig(prev => ({...prev, borderRadius: Number(e.target.value)}))} 
+                        className="w-full accent-[#0079d3]" 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                        <span>Shadow</span>
+                        <span className="text-[#818384]">{backgroundConfig.shadow || 0}px</span>
+                      </label>
+                      <input type="range" min="0" max="100" value={backgroundConfig.shadow || 0} 
+                        onChange={(e) => setBackgroundConfig(prev => ({...prev, shadow: Number(e.target.value)}))} 
+                        className="w-full accent-[#0079d3]" 
+                      />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-[#d7dadc] mb-3">Background Style</label>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="grid grid-cols-4 gap-2">
                         {Object.entries(GRADIENT_PRESETS).map(([key, gradient]) => (
-                          <button key={key} onClick={() => setBackgroundConfig(prev => ({...prev, backgroundType: key as BackgroundConfig['backgroundType']}))} className={`h-14 rounded-lg transition-all ${gradient} ${backgroundConfig.backgroundType === key ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'}`} />
+                          <button 
+                            key={key} 
+                            onClick={() => setBackgroundConfig(prev => ({...prev, backgroundType: key as BackgroundConfig['backgroundType']}))} 
+                            className={`aspect-square h-10 rounded-lg transition-all ${gradient} ${  // Changed from h-14 to h-10 and added aspect-square
+                              backgroundConfig.backgroundType === key 
+                                ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' 
+                                : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'
+                            }`} 
+                          />
                         ))}
                       </div>
                     </div>

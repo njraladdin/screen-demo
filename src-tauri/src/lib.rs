@@ -1,27 +1,24 @@
-// Import required functionality from the standard library and external crates
-use std::sync::atomic::{AtomicBool, Ordering};  // For thread-safe boolean values
-use std::time::Instant;  // For measuring time
-use std::thread;  // For spawning new threads
-use std::fs;      // For file operations
-use std::env;     // For environment-related operations
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+use std::thread;
+use std::fs;
+use std::env;
 use windows_capture::{
-    capture::{Context, GraphicsCaptureApiHandler},  // Core screen capture functionality
-    encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder},  // Video encoding
-    frame::Frame,  // For handling individual frames
-    graphics_capture_api::InternalCaptureControl,  // Control capture process
-    monitor::Monitor,  // For accessing monitor information
-    settings::{ColorFormat, CursorCaptureSettings, DrawBorderSettings, Settings},  // Capture settings
+    capture::{Context, GraphicsCaptureApiHandler},
+    encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder},
+    frame::Frame,
+    graphics_capture_api::InternalCaptureControl,
+    monitor::Monitor,
+    settings::{ColorFormat, CursorCaptureSettings, DrawBorderSettings, Settings},
 };
 use std::sync::Mutex;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows::Win32::Foundation::POINT;
 use std::collections::VecDeque;
 use serde::{Serialize, Deserialize};
-use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
-};
-use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
-use rdev::{listen, Event, EventType};
+use rdev::{listen, EventType};
+use tauri::{Manager, Emitter};
+use std::io::Read;
 
 // Global static variables that can be safely accessed from multiple threads
 static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
@@ -98,7 +95,64 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         frame: &mut Frame,
         capture_control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
-        println!("\rRecording for: {} seconds", self.start.elapsed().as_secs());
+        let current_time = self.start.elapsed();
+        
+        // Use thread_local for last frame time to avoid unsafe blocks
+        thread_local! {
+            static LAST_FRAME_TIME: std::cell::RefCell<Option<Instant>> = std::cell::RefCell::new(None);
+        }
+        
+        // Calculate frame delta more safely
+        let frame_delta = LAST_FRAME_TIME.with(|last| {
+            let mut last = last.borrow_mut();
+            let now = Instant::now();
+            let delta = match *last {
+                Some(prev) => {
+                    if now > prev {
+                        now.duration_since(prev)
+                    } else {
+                        std::time::Duration::from_millis(16) // Default to 60fps timing if calculation fails
+                    }
+                },
+                None => std::time::Duration::from_millis(16)
+            };
+            *last = Some(now);
+            delta
+        });
+
+        // Log frame timing during fast changes (when frames are coming in quickly)
+        if frame_delta.as_millis() < 20 {
+            static mut FRAME_COUNT: u32 = 0;
+            static mut LAST_LOG_TIME: Option<Instant> = None;
+            
+            unsafe {
+                FRAME_COUNT += 1;
+                
+                // Log FPS every second instead of every frame
+                if let Some(last_log) = LAST_LOG_TIME {
+                    if last_log.elapsed().as_secs() >= 1 {
+                        let fps = FRAME_COUNT as f32;
+                        println!("Capture performance: {:.1} FPS (avg frame interval: {:.1}ms)", 
+                            fps,
+                            1000.0 / fps
+                        );
+                        FRAME_COUNT = 0;
+                        LAST_LOG_TIME = Some(Instant::now());
+                    }
+                } else {
+                    LAST_LOG_TIME = Some(Instant::now());
+                }
+            }
+        }
+
+        // Log any encoding errors with more detail
+        if let Err(e) = self.encoder.as_mut().unwrap().send_frame(frame) {
+            println!("Encoding error during frame at {}s: {}", 
+                current_time.as_secs_f64(),
+                e
+            );
+            return Err(e.into());
+        }
 
         // Capture mouse position every 16ms (approximately 60fps)
         if self.last_mouse_capture.elapsed().as_millis() >= 16 {
@@ -106,9 +160,6 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                 let mut point = POINT::default();
                 if GetCursorPos(&mut point).as_bool() {
                     let is_clicked = IS_MOUSE_CLICKED.load(Ordering::SeqCst);
-                    if is_clicked {
-                        println!("Capturing clicked position at ({}, {})", point.x, point.y);
-                    }
                     let mouse_pos = MousePosition {
                         x: point.x - MONITOR_X,
                         y: point.y - MONITOR_Y,
@@ -124,13 +175,14 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
             self.last_mouse_capture = Instant::now();
         }
 
-        // Encode the frame
-        self.encoder.as_mut().unwrap().send_frame(frame)?;
-
         // Check if we should stop recording
         if SHOULD_STOP.load(Ordering::SeqCst) {
             // Finish encoding and stop capture
-            self.encoder.take().unwrap().finish()?;
+            if let Some(encoder) = self.encoder.take() {
+                if let Err(e) = encoder.finish() {
+                    println!("Error finishing encoder: {}", e);
+                }
+            }
             capture_control.stop();
         }
 
@@ -235,7 +287,7 @@ async fn start_recording() -> Result<(), String> {
 
 // Tauri command that stops the recording process
 #[tauri::command]
-async fn stop_recording() -> Result<(Vec<u8>, Vec<MousePosition>), String> {
+async fn stop_recording(app_handle: tauri::AppHandle) -> Result<(Vec<u8>, Vec<MousePosition>), String> {
     println!("Stopping recording and collecting mouse data...");
 
     if !RECORDING.load(Ordering::SeqCst) {
@@ -258,44 +310,26 @@ async fn stop_recording() -> Result<(Vec<u8>, Vec<MousePosition>), String> {
     // Get mouse positions
     let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
         let positions_vec: Vec<MousePosition> = positions.drain(..).collect();
-        let clicked_positions: Vec<&MousePosition> = positions_vec.iter().filter(|p| p.isClicked).collect();
-        println!("Found {} clicked positions in total", clicked_positions.len());
-        for pos in clicked_positions.iter() {
-            println!("Clicked position: {:?}", pos);
-        }
         println!("Collected {} mouse positions", positions_vec.len());
         positions_vec
     } else {
         Vec::new()
     };
 
-    // Read and return the video file
+    // Read and return the video file without progress tracking
     unsafe {
         match &VIDEO_PATH {
             Some(path) => {
-                println!("Video path: {}", path);
                 thread::sleep(std::time::Duration::from_millis(500));
                 
-                // Read file into memory
-                match fs::read(path) {
-                    Ok(data) => {
-                        println!("Successfully read video file");
-                        println!("Video data size: {} bytes", data.len());
-                        let first_bytes: Vec<u8> = data.iter().take(16).cloned().collect();
-                        println!("First 16 bytes: {:?}", first_bytes);
-                        let _ = fs::remove_file(path);  // Clean up temporary file
-                        Ok((data, mouse_positions))
-                    },
-                    Err(e) => {
-                        println!("Failed to read video file: {}", e);
-                        Err(format!("Failed to read video file: {}", e))
-                    }
-                }
+                let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+                let mut buffer = Vec::new();
+                file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+                
+                let _ = fs::remove_file(path);
+                Ok((buffer, mouse_positions))
             },
-            None => {
-                println!("No video path available");
-                Err("No video path available".to_string())
-            }
+            None => Err("No video path available".to_string())
         }
     }
 }
@@ -325,7 +359,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
-            get_mouse_positions
+            get_mouse_positions,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

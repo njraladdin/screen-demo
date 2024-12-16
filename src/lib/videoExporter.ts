@@ -9,47 +9,70 @@ interface ExportOptions {
   backgroundConfig: BackgroundConfig;
   mousePositions: MousePosition[];
   onProgress?: (progress: number) => void;
+  format?: 'webm' | 'mp4';
 }
 
 export class VideoExporter {
   private isExporting = false;
+  private lastProgress = 0;
 
   private setupMediaRecorder(stream: MediaStream): MediaRecorder {
-    const supportedMimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') 
-      ? 'video/webm;codecs=vp9,opus'
-      : 'video/webm;codecs=vp8,opus';
+    // Try MP4 first
+    if (MediaRecorder.isTypeSupported('video/mp4;codecs=h264,aac')) {
+      return new MediaRecorder(stream, {
+        mimeType: 'video/mp4;codecs=h264,aac',
+        videoBitsPerSecond: 8000000
+      });
+    }
+    
+    // Try WebM with VP9 (better quality)
+    if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
+      return new MediaRecorder(stream, {
+        mimeType: 'video/webm;codecs=vp9,opus',
+        videoBitsPerSecond: 8000000
+      });
+    }
 
+    // Fallback to WebM with VP8
     return new MediaRecorder(stream, {
-      mimeType: supportedMimeType,
+      mimeType: 'video/webm;codecs=vp8,opus',
       videoBitsPerSecond: 8000000
     });
   }
 
   async exportVideo(options: ExportOptions): Promise<Blob> {
     if (this.isExporting) {
-      console.log('[VideoExporter] Already exporting, ignoring request');
       return Promise.reject('Export already in progress');
     }
 
-    console.log('[VideoExporter] Starting export process');
     this.isExporting = true;
-
-    const { video, canvas, segment, onProgress } = options;
+    this.lastProgress = 0;
+    const { video, canvas, tempCanvas, segment } = options;
     
     // Store original video state
     const originalTime = video.currentTime;
     const originalPaused = video.paused;
-    
+
     const stream = canvas.captureStream(60);
     const mediaRecorder = this.setupMediaRecorder(stream);
     const chunks: Blob[] = [];
-    let timeUpdateHandler: ((e: Event) => void) | null = null;
+    let recordingComplete = false;
 
     try {
+      // Create a promise that resolves when recording is complete
+      const recordingPromise = new Promise<Blob>((resolve) => {
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = () => {
+          recordingComplete = true;
+          const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
+          resolve(blob);
+        };
+      });
+
       // Start recording
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
       mediaRecorder.start(1000);
 
       // Set video to start position
@@ -58,27 +81,29 @@ export class VideoExporter {
 
       // Wait for video completion
       await new Promise<void>((resolve, reject) => {
-        timeUpdateHandler = (e) => {
-          // Calculate progress
+        const timeUpdateHandler = () => {
+          if (recordingComplete) return;
+
           const currentProgress = (video.currentTime - segment.trimStart) / (segment.trimEnd - segment.trimStart) * 100;
           
-          // Check if we're at or very close to the end
-          const isAtEnd = Math.abs(video.currentTime - segment.trimEnd) < 0.1;
-          
-          console.log('[VideoExporter] Progress:', {
-            currentTime: video.currentTime,
-            trimEnd: segment.trimEnd,
-            progress: currentProgress,
-            isAtEnd
-          });
+          if (currentProgress === 0 && this.lastProgress > 90) {
+            console.log('[VideoExporter] Detected completion via progress drop', {
+              lastProgress: this.lastProgress,
+              currentProgress
+            });
+            video.removeEventListener('timeupdate', timeUpdateHandler);
+            mediaRecorder.stop();
+            resolve();
+            return;
+          }
 
-          // Report progress, ensuring we hit 100% at the end
-          onProgress?.(isAtEnd ? 100 : Math.min(currentProgress, 99.9));
+          this.lastProgress = currentProgress;
+          options.onProgress?.(Math.min(currentProgress, 99.9));
 
           const renderContext = {
             video,
             canvas,
-            tempCanvas: options.tempCanvas,
+            tempCanvas,
             segment,
             backgroundConfig: options.backgroundConfig,
             mousePositions: options.mousePositions,
@@ -87,14 +112,8 @@ export class VideoExporter {
 
           videoRenderer.drawFrame(renderContext, { exportMode: true });
 
-          // Stop when we're close enough to the end
-          if (isAtEnd) {
-            console.log('[VideoExporter] Reached end of trim range');
-            if (timeUpdateHandler) {
-              video.removeEventListener('timeupdate', timeUpdateHandler);
-              timeUpdateHandler = null;
-            }
-            video.pause();
+          if (recordingComplete) {
+            video.removeEventListener('timeupdate', timeUpdateHandler);
             mediaRecorder.stop();
             resolve();
           }
@@ -104,52 +123,48 @@ export class VideoExporter {
         video.addEventListener('error', reject);
       });
 
-      // Get the final blob
-      const finalBlob = await new Promise<Blob>((resolve, reject) => {
-        mediaRecorder.onstop = () => {
-          try {
-            const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
-            resolve(blob);
-          } catch (error) {
-            reject(error);
-          }
-        };
-      });
+      // Wait for the MediaRecorder to finish and get the final blob
+      const finalBlob = await recordingPromise;
 
+      // Only now pause the video and restore state
+      video.pause();
+      
       return finalBlob;
 
     } catch (error) {
       console.error('[VideoExporter] Export failed:', error);
       throw error;
     } finally {
-      // Clean up everything
-      if (timeUpdateHandler) {
-        video.removeEventListener('timeupdate', timeUpdateHandler);
+      // Only cleanup after we're sure recording is complete
+      if (!recordingComplete && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
       }
+      
       stream.getTracks().forEach(track => track.stop());
       this.isExporting = false;
+
+      // Restore video state
       video.currentTime = originalTime;
       if (originalPaused) video.pause();
+
+      this.lastProgress = 0;
     }
   }
 
   async exportAndDownload(options: ExportOptions): Promise<void> {
     try {
-      console.log('[VideoExporter] Starting export and download');
       const blob = await this.exportVideo(options);
-      
-      console.log('[VideoExporter] Export complete, creating download');
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `processed_video_${Date.now()}.webm`;
+      
+      // Get extension from actual MIME type
+      const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
+      a.download = `processed_video_${Date.now()}.${extension}`;
+      
       a.click();
-
-      console.log('[VideoExporter] Download triggered');
-      // Wait a bit before cleaning up URL to ensure download starts
       await new Promise(resolve => setTimeout(resolve, 1000));
       URL.revokeObjectURL(url);
-
     } catch (error) {
       console.error('[VideoExporter] Download failed:', error);
       throw error;

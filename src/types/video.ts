@@ -19,6 +19,7 @@ export interface BackgroundConfig {
   backgroundType: 'solid' | 'gradient1' | 'gradient2' | 'gradient3';
   cursorScale?: number;
   cursorSmoothness?: number;
+  shadow?: number;
 }
 
 export interface MousePosition {

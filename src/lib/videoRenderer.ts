@@ -24,10 +24,6 @@ interface CursorAnimationState {
 export class VideoRenderer {
   private animationFrame: number | null = null;
   private isDrawing: boolean = false;
-  private lastFrameTime: number = performance.now();
-  private frameCount: number = 0;
-  private lastFpsCheck: number = performance.now();
-  private drawTimes: number[] = []; // Track last 60 frame times
   private cursorAnimation: CursorAnimationState = {
     startTime: 0,
     isAnimating: false,
@@ -53,9 +49,6 @@ export class VideoRenderer {
   public startAnimation(renderContext: RenderContext) {
     console.log('[VideoRenderer] Starting animation');
     this.stopAnimation();
-    this.frameCount = 0;
-    this.lastFpsCheck = performance.now();
-    this.drawTimes = [];
 
     const animate = () => {
       // Only continue animation if video is playing
@@ -87,7 +80,6 @@ export class VideoRenderer {
     options: RenderOptions = {}
   ): Promise<void> => {
     if (this.isDrawing) {
-      // Silently skip frame if still drawing
       return;
     }
     
@@ -105,9 +97,6 @@ export class VideoRenderer {
     this.isDrawing = true;
 
     try {
-      // Remove frame rate limiting since we're syncing with video naturally
-      this.lastFrameTime = performance.now();
-
       const drawStart = performance.now();
       
       const timings: Record<string, number> = {};
@@ -153,15 +142,33 @@ export class VideoRenderer {
       tempCtx.quadraticCurveTo(x, y, x + radius, y);
       tempCtx.closePath();
 
+      // Add shadow before clipping
+      if (backgroundConfig.shadow) {
+        tempCtx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        tempCtx.shadowBlur = backgroundConfig.shadow;
+        tempCtx.shadowOffsetY = backgroundConfig.shadow * 0.5;
+      }
+
+      // Fill the path to create the shadow
+      tempCtx.fillStyle = 'white';
+      tempCtx.fill();
+
+      // Clear shadow settings before drawing video
+      if (backgroundConfig.shadow) {
+        tempCtx.shadowColor = 'transparent';
+        tempCtx.shadowBlur = 0;
+        tempCtx.shadowOffsetY = 0;
+      }
+
       // Apply clipping and draw video frame
       tempCtx.save();
       tempCtx.clip();
-      
+
       // Get interpolated zoom state for current time
       const zoomState = this.calculateCurrentZoomState(video.currentTime, segment);
 
       tempCtx.imageSmoothingEnabled = true;
-      tempCtx.imageSmoothingQuality = 'high';
+      tempCtx.imageSmoothingQuality = options.exportMode ? 'high' : 'medium';
 
       if (zoomState && zoomState.zoomFactor !== 1) {
         tempCtx.save();
@@ -176,6 +183,12 @@ export class VideoRenderer {
         tempCtx.restore();
       } else {
         tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
+      }
+
+      if (backgroundConfig.shadow) {
+        tempCtx.shadowColor = 'transparent';
+        tempCtx.shadowBlur = 0;
+        tempCtx.shadowOffsetY = 0;
       }
 
       tempCtx.restore();
@@ -428,7 +441,7 @@ export class VideoRenderer {
       
       if (this.cursorAnimation.isSquishing) {
         // Quick scale down with slight anticipation
-        const easeInBack = t => {
+        const easeInBack = (t: number): number => {
           const c1 = 1.70158;
           const c3 = c1 + 1;
           return c3 * t * t * t - c1 * t * t;
@@ -436,7 +449,7 @@ export class VideoRenderer {
         scaleAmount = 1 - (0.25 * easeInBack(t));  // Scale down to 75%
       } else {
         // Springy bounce back
-        const springyBounce = t => {
+        const springyBounce = (t: number): number => {
           // More pronounced spring effect
           const decay = Math.exp(-t * 6);
           const oscillation = Math.sin(t * 12);
