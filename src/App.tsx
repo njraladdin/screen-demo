@@ -251,7 +251,10 @@ function App() {
     }
   }
 
-  // Update handleStopRecording to handle loading state
+  // Add these state variables in App component
+  const [loadingProgress, setLoadingProgress] = useState(0);
+
+  // Replace handleStopRecording with this version
   async function handleStopRecording() {
     if (!isRecording) return;
 
@@ -260,18 +263,21 @@ function App() {
       setIsLoadingVideo(true);
       setIsVideoReady(false);
 
-      const [videoData, mouseData] = await invoke<[number[], MousePosition[]]>("stop_recording");
-
-      console.log('Received new mouse positions:', {
-        count: mouseData.length,
-        first: mouseData[0],
-        last: mouseData[mouseData.length - 1]
-      });
+      const [numChunks, mouseData] = await invoke<[number, MousePosition[]]>("stop_recording");
       setMousePositions(mouseData);
 
-      const uint8Array = new Uint8Array(videoData);
-      const blob = new Blob([uint8Array], { type: "video/mp4" });
-      const url = URL.createObjectURL(blob);
+      const chunks: Uint8Array[] = [];
+      
+      for (let i = 0; i < numChunks; i++) {
+        const base64Chunk = await invoke<string>("get_video_chunk", { chunkIndex: i });
+        const binaryChunk = Uint8Array.from(atob(base64Chunk), c => c.charCodeAt(0));
+        chunks.push(binaryChunk);
+        
+        setLoadingProgress(Math.round(((i + 1) / numChunks) * 100));
+      }
+
+      const fullVideo = new Blob(chunks, { type: "video/mp4" });
+      const url = URL.createObjectURL(fullVideo);
       setCurrentVideo(url);
 
       if (videoRef.current) {
@@ -292,6 +298,7 @@ function App() {
       setError(err as string);
     } finally {
       setIsLoadingVideo(false);
+      setLoadingProgress(0);
     }
   }
 
@@ -628,7 +635,7 @@ function App() {
     findActiveKeyframe();
   }, [currentTime, segment, isVideoReady]);
 
-  // Inside the App component, add this new helper function
+  // Update the loading placeholder to show progress
   const renderPlaceholder = () => {
     return (
       <div className="absolute inset-0 bg-[#1a1a1b] flex flex-col items-center justify-center">
@@ -663,6 +670,11 @@ function App() {
             <Video className="w-12 h-12 text-[#343536] mb-4" />
             <p className="text-[#d7dadc] font-medium">No Video Selected</p>
             <p className="text-[#818384] text-sm mt-1">Click 'Start Recording' to begin</p>
+          </div>
+        )}
+        {isLoadingVideo && loadingProgress > 0 && (
+          <div className="mt-2">
+            <p className="text-[#818384] text-sm">Loading video: {loadingProgress}%</p>
           </div>
         )}
       </div>

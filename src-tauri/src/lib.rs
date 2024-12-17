@@ -1,8 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use std::thread;
-use std::fs;
+use std::fs::{self, File};
 use std::env;
+use std::io::{self, Read, Seek};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
     encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder},
@@ -16,14 +17,13 @@ use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use windows::Win32::Foundation::POINT;
 use std::collections::VecDeque;
 use serde::{Serialize, Deserialize};
-use rdev::{listen, EventType};
-use tauri::{Manager, Emitter};
-use std::io::Read;
+use tauri::Manager;
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
 use std::mem::zeroed;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 
 // Global static variables that can be safely accessed from multiple threads
 static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
@@ -31,6 +31,9 @@ static mut VIDEO_PATH: Option<String> = None;  // Stores the path where video wi
 static SHOULD_STOP: AtomicBool = AtomicBool::new(false);  // Signals when to stop recording
 static IS_MOUSE_CLICKED: AtomicBool = AtomicBool::new(false);
 static SHOULD_LISTEN_CLICKS: AtomicBool = AtomicBool::new(false);
+static VIDEO_DATA: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+static ENCODING_FINISHED: AtomicBool = AtomicBool::new(false);
+static ENCODER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // Add these new structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +65,9 @@ struct CaptureHandler {
     encoder: Option<VideoEncoder>,  // Handles video encoding, wrapped in Option to allow taking ownership later
     start: Instant,  // Tracks when recording started
     last_mouse_capture: Instant,
+    frame_count: u32,
+    last_frame_time: Instant,
+    dropped_frames: u32,
 }
 
 // Implementation of the GraphicsCaptureApiHandler trait for our CaptureHandler
@@ -74,6 +80,11 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
         println!("Created capture handler with flags: {}", ctx.flags);
 
+        // Reset all states
+        SHOULD_STOP.store(false, Ordering::SeqCst);
+        ENCODING_FINISHED.store(false, Ordering::SeqCst);
+        ENCODER_ACTIVE.store(false, Ordering::SeqCst);
+
         // Get primary monitor dimensions
         let monitor = Monitor::primary()?;
         let width = monitor.width()?;
@@ -82,26 +93,36 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         // Create temporary file path for the video
         let temp_dir = env::temp_dir();
-        let video_path = temp_dir.join("screen_recording.mp4");
+        let video_path = temp_dir.join(format!("screen_recording_{}.mp4", Instant::now().elapsed().as_millis()));
         
         unsafe {
             VIDEO_PATH = Some(video_path.to_string_lossy().to_string());
         }
 
-        // Configure video encoding settings with actual monitor dimensions
+        // Clear previous video data
+        if let Ok(mut data) = VIDEO_DATA.lock() {
+            *data = None;
+        }
+
+        // Create encoder
         let encoder = VideoEncoder::new(
             VideoSettingsBuilder::new(width, height)
                 .frame_rate(60)
-                .bitrate(20_000_000),  // Increased from 12Mbps to 20Mbps for better quality
+                .bitrate(10_000_000),  // Reduced bitrate for faster processing
             AudioSettingsBuilder::default().disabled(true),
             ContainerSettingsBuilder::default(),
             &video_path,
         )?;
 
+        ENCODER_ACTIVE.store(true, Ordering::SeqCst);
+
         Ok(Self {
             encoder: Some(encoder),
             start: Instant::now(),
             last_mouse_capture: Instant::now(),
+            frame_count: 0,
+            last_frame_time: Instant::now(),
+            dropped_frames: 0,
         })
     }
 
@@ -111,6 +132,32 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         frame: &mut Frame,
         capture_control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
+        // Only process frames if encoder is active
+        if !ENCODER_ACTIVE.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let now = Instant::now();
+        let frame_time = now.duration_since(self.last_frame_time);
+        
+        // Monitor for potential frame drops (expecting ~16.7ms between frames at 60fps)
+        if frame_time.as_millis() > 20 {
+            self.dropped_frames += 1;
+            println!("Potential frame drop: {}ms between frames", frame_time.as_millis());
+        }
+
+        self.frame_count += 1;
+        self.last_frame_time = now;
+
+        // Log performance stats every second
+        if self.start.elapsed().as_secs() > 0 && self.frame_count % 60 == 0 {
+            println!("Recording stats: frames={}, drops={}, avg_interval={:.1}ms", 
+                self.frame_count,
+                self.dropped_frames,
+                self.start.elapsed().as_millis() as f32 / self.frame_count as f32
+            );
+        }
+
         let current_time = self.start.elapsed();
         
         // Use thread_local for last frame time to avoid unsafe blocks
@@ -123,20 +170,14 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
             let mut last = last.borrow_mut();
             let now = Instant::now();
             let delta = match *last {
-                Some(prev) => {
-                    if now > prev {
-                        now.duration_since(prev)
-                    } else {
-                        std::time::Duration::from_millis(16) // Default to 60fps timing if calculation fails
-                    }
-                },
+                Some(prev) => now.duration_since(prev),
                 None => std::time::Duration::from_millis(16)
             };
             *last = Some(now);
             delta
         });
 
-        // Log frame timing during fast changes (when frames are coming in quickly)
+        // Log frame timing during fast changes
         if frame_delta.as_millis() < 20 {
             static mut FRAME_COUNT: u32 = 0;
             static mut LAST_LOG_TIME: Option<Instant> = None;
@@ -144,7 +185,6 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
             unsafe {
                 FRAME_COUNT += 1;
                 
-                // Log FPS every second instead of every frame
                 if let Some(last_log) = LAST_LOG_TIME {
                     if last_log.elapsed().as_secs() >= 1 {
                         let fps = FRAME_COUNT as f32;
@@ -166,6 +206,10 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
             println!("Encoding error during frame at {}s: {}", 
                 current_time.as_secs_f64(),
                 e
+            );
+            println!("Frame details: size={}x{}", 
+                frame.width(), 
+                frame.height()
             );
             return Err(e.into());
         }
@@ -199,11 +243,13 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         // Check if we should stop recording
         if SHOULD_STOP.load(Ordering::SeqCst) {
-            // Finish encoding and stop capture
+            println!("Stopping capture and finalizing encoder...");
             if let Some(encoder) = self.encoder.take() {
+                ENCODER_ACTIVE.store(false, Ordering::SeqCst);
                 if let Err(e) = encoder.finish() {
                     println!("Error finishing encoder: {}", e);
                 }
+                ENCODING_FINISHED.store(true, Ordering::SeqCst);
             }
             capture_control.stop();
         }
@@ -214,6 +260,9 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
     // Called when capture session ends
     fn on_closed(&mut self) -> Result<(), Self::Error> {
         println!("Capture session ended");
+        // Ensure states are reset
+        ENCODER_ACTIVE.store(false, Ordering::SeqCst);
+        ENCODING_FINISHED.store(true, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -294,8 +343,10 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
         return Err("Already recording".to_string());
     }
 
-    // Reset the stop flag before starting new recording
+    // Reset all states
     SHOULD_STOP.store(false, Ordering::SeqCst);
+    ENCODING_FINISHED.store(false, Ordering::SeqCst);
+    ENCODER_ACTIVE.store(false, Ordering::SeqCst);
 
     // Clear previous mouse positions
     if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
@@ -382,51 +433,84 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
-// Tauri command that stops the recording process
-#[tauri::command]
-async fn stop_recording(_: tauri::AppHandle) -> Result<(Vec<u8>, Vec<MousePosition>), String> {
-    println!("Stopping recording and collecting mouse data...");
+// Add these constants near the top
+const CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
 
-    if !RECORDING.load(Ordering::SeqCst) {
+// Add this new command
+#[tauri::command]
+async fn get_video_chunk(chunk_index: usize) -> Result<String, String> {
+    unsafe {
+        if let Some(path) = &VIDEO_PATH {
+            match File::open(path) {
+                Ok(mut file) => {
+                    // Seek to the correct position
+                    if let Err(e) = file.seek(std::io::SeekFrom::Start((chunk_index * CHUNK_SIZE) as u64)) {
+                        return Err(format!("Failed to seek: {}", e));
+                    }
+
+                    let mut buffer = vec![0u8; CHUNK_SIZE];
+                    match file.read(&mut buffer) {
+                        Ok(n) => {
+                            buffer.truncate(n); // Only keep what we actually read
+                            Ok(BASE64.encode(&buffer))
+                        },
+                        Err(e) => Err(format!("Failed to read chunk: {}", e))
+                    }
+                },
+                Err(e) => Err(format!("Failed to open video file: {}", e))
+            }
+        } else {
+            Err("No video path available".to_string())
+        }
+    }
+}
+
+// Modify stop_recording to return metadata instead of the full file
+#[tauri::command]
+async fn stop_recording(_: tauri::AppHandle) -> Result<(usize, Vec<MousePosition>), String> {
+    println!("Starting recording stop process...");
+
+    if !RECORDING.load(Ordering::SeqCst) || !ENCODER_ACTIVE.load(Ordering::SeqCst) {
         return Err("Not recording".to_string());
     }
 
     // Signal capture to stop
     SHOULD_STOP.store(true, Ordering::SeqCst);
-    
-    // Immediately update recording state to false
     RECORDING.store(false, Ordering::SeqCst);
-    
-    // Wait a bit longer for encoder to finish and cleanup
-    thread::sleep(std::time::Duration::from_millis(500));
-    
-    // Stop listening for clicks
+
+    // Wait for encoder to finish with timeout
+    let start = Instant::now();
+    while !ENCODING_FINISHED.load(Ordering::SeqCst) {
+        thread::sleep(std::time::Duration::from_millis(100));
+        if start.elapsed().as_secs() > 5 {
+            ENCODER_ACTIVE.store(false, Ordering::SeqCst);
+            return Err("Timeout waiting for encoder to finish".to_string());
+        }
+    }
+
+    // Stop mouse tracking
     SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
     IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
 
-    // Get mouse positions
+    // Collect mouse positions
     let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
-        let positions_vec: Vec<MousePosition> = positions.drain(..).collect();
-        println!("Collected {} mouse positions", positions_vec.len());
-        positions_vec
+        positions.drain(..).collect()
     } else {
         Vec::new()
     };
 
-    // Read and return the video file without progress tracking
+    // Get file size instead of reading the file
     unsafe {
-        match &VIDEO_PATH {
-            Some(path) => {
-                thread::sleep(std::time::Duration::from_millis(500));
-                
-                let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
-                let mut buffer = Vec::new();
-                file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
-                
-                let _ = fs::remove_file(path);
-                Ok((buffer, mouse_positions))
-            },
-            None => Err("No video path available".to_string())
+        if let Some(path) = &VIDEO_PATH {
+            match fs::metadata(path) {
+                Ok(metadata) => {
+                    let total_chunks = (metadata.len() as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+                    Ok((total_chunks, mouse_positions))
+                },
+                Err(e) => Err(format!("Failed to get video metadata: {}", e))
+            }
+        } else {
+            Err("No video path available".to_string())
         }
     }
 }
@@ -458,6 +542,7 @@ pub fn run() {
             stop_recording,
             get_monitors,
             get_mouse_positions,
+            get_video_chunk,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

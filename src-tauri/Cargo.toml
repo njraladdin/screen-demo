@@ -32,4 +32,5 @@ windows = { version = "0.48", features = [
 ] }
 lazy_static = "1.4.0"
 rdev = "0.5.3"
+base64 = "0.21"
 

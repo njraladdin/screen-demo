@@ -27,4 +27,11 @@ export interface MousePosition {
   y: number;
   timestamp: number;
   isClicked?: boolean;
+}
+
+export interface VideoMetadata {
+  total_chunks: number;
+  duration: number;
+  width: number;
+  height: number;
 } 
