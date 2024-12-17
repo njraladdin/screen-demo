@@ -250,54 +250,51 @@ export class VideoRenderer {
   ): string | CanvasGradient {
     switch (type) {
       case 'gradient1': {
-        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, ctx.canvas.height);
-        gradient.addColorStop(0, '#ff9a9e');
-        gradient.addColorStop(0.99, '#fad0c4');
-        gradient.addColorStop(1, '#fad0c4');
+        // Blue to violet gradient
+        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0); // horizontal gradient
+        gradient.addColorStop(0, '#2563eb'); // blue-600
+        gradient.addColorStop(1, '#7c3aed'); // violet-600
         return gradient;
       }
       case 'gradient2': {
-        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width * 0.866, ctx.canvas.height); // 120deg
-        gradient.addColorStop(0, '#84fab0');
-        gradient.addColorStop(1, '#8fd3f4');
+        // Rose to orange gradient
+        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient.addColorStop(0, '#fb7185'); // rose-400
+        gradient.addColorStop(1, '#fdba74'); // orange-300
         return gradient;
       }
       case 'gradient3': {
-        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width * 0.866, ctx.canvas.height); // 120deg
-        gradient.addColorStop(0, '#f093fb');
-        gradient.addColorStop(1, '#f5576c');
+        // Emerald to teal gradient
+        const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+        gradient.addColorStop(0, '#10b981'); // emerald-500
+        gradient.addColorStop(1, '#2dd4bf'); // teal-400
         return gradient;
       }
       case 'solid': {
-        // Create the complex gradient for the "solid" background
-        const overlay1 = ctx.createLinearGradient(0, 0, 0, ctx.canvas.height);
-        overlay1.addColorStop(0, 'rgba(255,255,255,0.15)');
-        overlay1.addColorStop(1, 'rgba(0,0,0,0.15)');
-
+        // Create a subtle dark gradient
+        const gradient = ctx.createLinearGradient(0, 0, 0, ctx.canvas.height);
+        gradient.addColorStop(0, '#0a0a0a'); // Very slightly lighter black at top
+        gradient.addColorStop(0.5, '#000000'); // Pure black in middle
+        gradient.addColorStop(1, '#0a0a0a'); // Very slightly lighter black at bottom
+        
+        // Add a subtle radial overlay for more depth
         const centerX = ctx.canvas.width / 2;
-        const overlay2 = ctx.createRadialGradient(
-          centerX, 0, 0,
-          centerX, 0, ctx.canvas.height * 1.2
+        const centerY = ctx.canvas.height / 2;
+        const radialGradient = ctx.createRadialGradient(
+          centerX, centerY, 0,
+          centerX, centerY, ctx.canvas.width * 0.8
         );
-        overlay2.addColorStop(0, 'rgba(255,255,255,0.4)');
-        overlay2.addColorStop(1, 'rgba(0,0,0,0.4)');
+        radialGradient.addColorStop(0, 'rgba(30, 30, 30, 0.15)'); // Subtle light center
+        radialGradient.addColorStop(1, 'rgba(0, 0, 0, 0)'); // Fade to transparent
 
-        // Draw the base color first
-        ctx.fillStyle = '#989898';
+        // Draw base gradient
+        ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-        // Apply the overlays with multiply blend mode
-        ctx.globalCompositeOperation = 'multiply';
-        
-        ctx.fillStyle = overlay1;
+        // Add radial overlay
+        ctx.fillStyle = radialGradient;
         ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-        
-        ctx.fillStyle = overlay2;
-        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-        
-        // Reset composite operation
-        ctx.globalCompositeOperation = 'source-over';
-        
+
         return 'rgba(0,0,0,0)'; // Return transparent as we've already filled
       }
       default:

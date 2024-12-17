@@ -736,9 +736,42 @@ function App() {
 
             <div className="col-span-1 space-y-3">
               <div className="flex bg-[#272729] p-0.5 rounded-md">
-                <Button onClick={() => setActivePanel('zoom')} variant={activePanel === 'zoom' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'zoom' ? 'bg-[#1a1a1b] text-[#d7dadc]' : 'bg-transparent text-[#818384]'}`}>Zoom</Button>
-                <Button onClick={() => setActivePanel('background')} variant={activePanel === 'background' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'background' ? 'bg-[#1a1a1b] text-[#d7dadc]' : 'bg-transparent text-[#818384]'}`}>Background</Button>
-                <Button onClick={() => setActivePanel('cursor')} variant={activePanel === 'cursor' ? 'default' : 'outline'} size="sm" className={`flex-1 ${activePanel === 'cursor' ? 'bg-[#1a1a1b] text-[#d7dadc]' : 'bg-transparent text-[#818384]'}`}>Cursor</Button>
+                <Button 
+                  onClick={() => setActivePanel('zoom')} 
+                  variant={activePanel === 'zoom' ? 'default' : 'outline'} 
+                  size="sm" 
+                  className={`flex-1 ${
+                    activePanel === 'zoom' 
+                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
+                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
+                  }`}
+                >
+                  Zoom
+                </Button>
+                <Button 
+                  onClick={() => setActivePanel('background')} 
+                  variant={activePanel === 'background' ? 'default' : 'outline'} 
+                  size="sm" 
+                  className={`flex-1 ${
+                    activePanel === 'background' 
+                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
+                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
+                  }`}
+                >
+                  Background
+                </Button>
+                <Button 
+                  onClick={() => setActivePanel('cursor')} 
+                  variant={activePanel === 'cursor' ? 'default' : 'outline'} 
+                  size="sm" 
+                  className={`flex-1 ${
+                    activePanel === 'cursor' 
+                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
+                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
+                  }`}
+                >
+                  Cursor
+                </Button>
               </div>
 
               {activePanel === 'zoom' ? (
