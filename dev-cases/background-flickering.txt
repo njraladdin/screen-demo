@@ -1,0 +1,116 @@
+Background Flickering Issue
+=========================
+
+Problem
+-------
+Background gradient/color flickering during video export preview and occasionally during normal playback. The background would briefly flash to black between frames.
+
+Root Cause
+----------
+1. Multiple canvas drawing operations not properly synchronized:
+   - Background drawn separately from video frame
+   - Shadow and rounded corners using separate temp canvas
+   - Each operation potentially visible before next completes
+
+2. Canvas state management issues:
+   - Compositing operations not properly ordered
+   - Shadow effects applied after clipping
+   - Multiple draw calls allowing partial frames to be visible
+
+Original Code (Problematic)
+-------------------------
+// In videoRenderer.ts
+public drawFrame = async (context: RenderContext): Promise<void> => {
+    const { video, canvas, tempCanvas, backgroundConfig } = context;
+    const ctx = canvas.getContext('2d');
+    
+    // Background drawn separately
+    ctx.fillStyle = this.getBackgroundStyle(ctx, backgroundConfig.backgroundType);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Shadow applied after clipping (wrong)
+    if (backgroundConfig.shadow) {
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        ctx.shadowBlur = backgroundConfig.shadow;
+    }
+
+    // Multiple separate draw operations
+    ctx.clip();
+    ctx.drawImage(video, x, y, scaledWidth, scaledHeight);
+    // ... more drawing operations
+};
+
+Fixed Code
+---------
+// In videoRenderer.ts
+public drawFrame = async (context: RenderContext): Promise<void> => {
+    const { video, canvas, tempCanvas, backgroundConfig } = context;
+    const ctx = canvas.getContext('2d');
+    
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Draw background to main canvas first
+    ctx.fillStyle = this.getBackgroundStyle(ctx, backgroundConfig.backgroundType);
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Setup temp canvas for video frame
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const tempCtx = tempCanvas.getContext('2d')!;
+    tempCtx.save();
+
+    // Create rounded rectangle path
+    const radius = backgroundConfig.borderRadius;
+    tempCtx.beginPath();
+    tempCtx.moveTo(x + radius, y);
+    tempCtx.lineTo(x + scaledWidth - radius, y);
+    tempCtx.quadraticCurveTo(x + scaledWidth, y, x + scaledWidth, y + radius);
+    tempCtx.lineTo(x + scaledWidth, y + scaledHeight - radius);
+    tempCtx.quadraticCurveTo(x + scaledWidth, y + scaledHeight, x + scaledWidth - radius, y + scaledHeight);
+    tempCtx.lineTo(x + radius, y + scaledHeight);
+    tempCtx.quadraticCurveTo(x, y + scaledHeight, x, y + scaledHeight - radius);
+    tempCtx.lineTo(x, y + radius);
+    tempCtx.quadraticCurveTo(x, y, x + radius, y);
+    tempCtx.closePath();
+
+    // Apply shadow before clipping
+    tempCtx.fillStyle = 'white';
+    tempCtx.fill();
+    
+    if (backgroundConfig.shadow) {
+        tempCtx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+        tempCtx.shadowBlur = backgroundConfig.shadow;
+        tempCtx.shadowOffsetY = backgroundConfig.shadow * 0.5;
+        tempCtx.fill();
+        // Reset shadow
+        tempCtx.shadowColor = 'transparent';
+        tempCtx.shadowBlur = 0;
+        tempCtx.shadowOffsetY = 0;
+    }
+
+    // Now clip and draw video
+    tempCtx.clip();
+    tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
+    tempCtx.restore();
+
+    // Single composite operation to main canvas
+    ctx.drawImage(tempCanvas, 0, 0);
+    ctx.restore();
+};
+
+Verification
+-----------
+- No flickering during export preview
+- Stable background rendering during playback
+- Shadow and rounded corners render correctly
+- Single frame shows complete state
+
+Files Changed
+------------
+src/lib/videoRenderer.ts
+
+Related Issues
+-------------
+- Performance impact of multiple canvas operations (#123)
+- Export preview quality inconsistency (#145)

@@ -290,6 +290,7 @@ function App() {
         };
 
         video.addEventListener('loadeddata', loadFirstFrame);
+        videoControllerRef.current?.handleVideoSourceChange(url);
         video.src = url;
         video.load();
       }

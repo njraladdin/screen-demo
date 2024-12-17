@@ -259,6 +259,28 @@ export class VideoController {
   public get isSeeking() { return this.state.isSeeking; }
   public get currentTime() { return this.state.currentTime; }
   public get duration() { return this.state.duration; }
+
+  // Add this new method
+  public handleVideoSourceChange = (videoUrl: string) => {
+    if (!this.video || !this.canvas) return;
+    
+    // Reset canvas dimensions to match video's native resolution
+    const handleMetadata = () => {
+      this.canvas.width = this.video.videoWidth;
+      this.canvas.height = this.video.videoHeight;
+      
+      // Force high quality scaling
+      const ctx = this.canvas.getContext('2d');
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+      }
+      
+      this.video.removeEventListener('loadedmetadata', handleMetadata);
+    };
+
+    this.video.addEventListener('loadedmetadata', handleMetadata);
+  };
 }
 
 export const createVideoController = (options: VideoControllerOptions) => {

@@ -82,183 +82,142 @@ export class VideoRenderer {
     context: RenderContext,
     options: RenderOptions = {}
   ): Promise<void> => {
-    if (this.isDrawing) {
-      return;
-    }
+    if (this.isDrawing) return;
     
     const { video, canvas, tempCanvas, segment, backgroundConfig, mousePositions } = context;
     if (!video || !canvas || !segment) return;
-
-    // Less strict about readyState
-    if (video.readyState < 2) {
-      return;
-    }
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     this.isDrawing = true;
+    const drawStart = performance.now();
 
     try {
-      const drawStart = performance.now();
-      
-      const timings: Record<string, number> = {};
-      
-      // Canvas setup
-      const setupStart = performance.now();
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      timings.setup = performance.now() - setupStart;
+        // Calculate dimensions once
+        const scale = backgroundConfig.scale / 100;
+        const scaledWidth = canvas.width * scale;
+        const scaledHeight = canvas.height * scale;
+        const x = (canvas.width - scaledWidth) / 2;
+        const y = (canvas.height - scaledHeight) / 2;
+        const zoomState = this.calculateCurrentZoomState(video.currentTime, segment);
 
-      // Background
-      const bgStart = performance.now();
-      ctx.fillStyle = this.getBackgroundStyle(ctx, backgroundConfig.backgroundType);
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      timings.background = performance.now() - bgStart;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
 
-      // Video frame
-      const videoStart = performance.now();
-      
-      // Calculate scaled dimensions
-      const scale = backgroundConfig.scale / 100;
-      const scaledWidth = canvas.width * scale;
-      const scaledHeight = canvas.height * scale;
-      const x = (canvas.width - scaledWidth) / 2;
-      const y = (canvas.height - scaledHeight) / 2;
+        // Setup temporary canvas for rounded corners and shadows
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+        const tempCtx = tempCanvas.getContext('2d')!;
 
-      // Setup temporary canvas for rounded corners
-      tempCanvas.width = canvas.width;
-      tempCanvas.height = canvas.height;
-      const tempCtx = tempCanvas.getContext('2d')!;
+        // Clear both canvases
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        tempCtx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw rounded rectangle path
-      const radius = backgroundConfig.borderRadius;
-      tempCtx.beginPath();
-      tempCtx.moveTo(x + radius, y);
-      tempCtx.lineTo(x + scaledWidth - radius, y);
-      tempCtx.quadraticCurveTo(x + scaledWidth, y, x + scaledWidth, y + radius);
-      tempCtx.lineTo(x + scaledWidth, y + scaledHeight - radius);
-      tempCtx.quadraticCurveTo(x + scaledWidth, y + scaledHeight, x + scaledWidth - radius, y + scaledHeight);
-      tempCtx.lineTo(x + radius, y + scaledHeight);
-      tempCtx.quadraticCurveTo(x, y + scaledHeight, x, y + scaledHeight - radius);
-      tempCtx.lineTo(x, y + radius);
-      tempCtx.quadraticCurveTo(x, y, x + radius, y);
-      tempCtx.closePath();
+        // Draw background to main canvas first
+        ctx.fillStyle = this.getBackgroundStyle(ctx, backgroundConfig.backgroundType);
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Add shadow before clipping
-      if (backgroundConfig.shadow) {
-        tempCtx.shadowColor = 'rgba(0, 0, 0, 0.3)';
-        tempCtx.shadowBlur = backgroundConfig.shadow;
-        tempCtx.shadowOffsetY = backgroundConfig.shadow * 0.5;
-      }
-
-      // Fill the path to create the shadow
-      tempCtx.fillStyle = 'white';
-      tempCtx.fill();
-
-      // Clear shadow settings before drawing video
-      if (backgroundConfig.shadow) {
-        tempCtx.shadowColor = 'transparent';
-        tempCtx.shadowBlur = 0;
-        tempCtx.shadowOffsetY = 0;
-      }
-
-      // Apply clipping and draw video frame
-      tempCtx.save();
-      tempCtx.clip();
-
-      // Get interpolated zoom state for current time
-      const zoomState = this.calculateCurrentZoomState(video.currentTime, segment);
-
-      // Enable high quality rendering
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-
-      // Use better quality settings for export mode
-      if (options.exportMode) {
-        tempCtx.imageSmoothingEnabled = true;
-        tempCtx.imageSmoothingQuality = 'high';
-        
-        // Ensure video frame is rendered at full quality
-        if (video.videoWidth > 0) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          tempCanvas.width = video.videoWidth;
-          tempCanvas.height = video.videoHeight;
-        }
-      }
-
-      if (zoomState && zoomState.zoomFactor !== 1) {
+        // Draw video frame with rounded corners to temp canvas
         tempCtx.save();
-        const zoomedWidth = scaledWidth * zoomState.zoomFactor;
-        const zoomedHeight = scaledHeight * zoomState.zoomFactor;
-        const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
-        const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
         
-        tempCtx.translate(x + zoomOffsetX, y + zoomOffsetY);
-        tempCtx.scale(zoomState.zoomFactor * scale, zoomState.zoomFactor * scale);
-        tempCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
-        tempCtx.restore();
-      } else {
-        tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
-      }
+        // Create rounded rectangle path
+        const radius = backgroundConfig.borderRadius;
+        tempCtx.beginPath();
+        tempCtx.moveTo(x + radius, y);
+        tempCtx.lineTo(x + scaledWidth - radius, y);
+        tempCtx.quadraticCurveTo(x + scaledWidth, y, x + scaledWidth, y + radius);
+        tempCtx.lineTo(x + scaledWidth, y + scaledHeight - radius);
+        tempCtx.quadraticCurveTo(x + scaledWidth, y + scaledHeight, x + scaledWidth - radius, y + scaledHeight);
+        tempCtx.lineTo(x + radius, y + scaledHeight);
+        tempCtx.quadraticCurveTo(x, y + scaledHeight, x, y + scaledHeight - radius);
+        tempCtx.lineTo(x, y + radius);
+        tempCtx.quadraticCurveTo(x, y, x + radius, y);
+        tempCtx.closePath();
 
-      if (backgroundConfig.shadow) {
-        tempCtx.shadowColor = 'transparent';
-        tempCtx.shadowBlur = 0;
-        tempCtx.shadowOffsetY = 0;
-      }
+        // Fill white first to create the shape
+        tempCtx.fillStyle = 'white';
+        tempCtx.fill();
 
-      tempCtx.restore();
-
-      // Draw the temporary canvas onto the main canvas
-      ctx.drawImage(tempCanvas, 0, 0);
-      timings.videoFrame = performance.now() - videoStart;
-
-      // Mouse cursor
-      const cursorStart = performance.now();
-      const interpolatedPosition = this.interpolateCursorPosition(video.currentTime, mousePositions, backgroundConfig);
-      if (interpolatedPosition) {
-        // Calculate base cursor position relative to original video
-        let cursorX = x + (interpolatedPosition.x * scaledWidth / video.videoWidth);
-        let cursorY = y + (interpolatedPosition.y * scaledHeight / video.videoHeight);
-
-        // If there's zoom, adjust cursor position using same transform
-        if (zoomState && zoomState.zoomFactor !== 1) {
-          const zoomedWidth = scaledWidth * zoomState.zoomFactor;
-          const zoomedHeight = scaledHeight * zoomState.zoomFactor;
-          const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
-          const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
-
-          // Apply same zoom transform to cursor position
-          cursorX = (cursorX - x) * zoomState.zoomFactor + x + zoomOffsetX;
-          cursorY = (cursorY - y) * zoomState.zoomFactor + y + zoomOffsetY;
+        // Add shadow before clipping
+        if (backgroundConfig.shadow) {
+            tempCtx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+            tempCtx.shadowBlur = backgroundConfig.shadow;
+            tempCtx.shadowOffsetY = backgroundConfig.shadow * 0.5;
+            // Draw the shadow by filling again
+            tempCtx.fill();
+            // Reset shadow for video drawing
+            tempCtx.shadowColor = 'transparent';
+            tempCtx.shadowBlur = 0;
+            tempCtx.shadowOffsetY = 0;
         }
 
-        const cursorScale = (backgroundConfig.cursorScale || 2) * (zoomState?.zoomFactor || 1);
+        // Now clip and draw video
+        tempCtx.clip();
+        if (zoomState && zoomState.zoomFactor !== 1) {
+            const zoomedWidth = scaledWidth * zoomState.zoomFactor;
+            const zoomedHeight = scaledHeight * zoomState.zoomFactor;
+            const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
+            const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
+            
+            tempCtx.save();
+            tempCtx.translate(x + zoomOffsetX, y + zoomOffsetY);
+            tempCtx.scale(zoomState.zoomFactor * scale, zoomState.zoomFactor * scale);
+            tempCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
+            tempCtx.restore();
+        } else {
+            tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
+        }
+        tempCtx.restore();
 
-        this.drawMouseCursor(
-          ctx,
-          cursorX,
-          cursorY,
-          interpolatedPosition.isClicked || false,
-          cursorScale
-        );
-      }
-      timings.cursor = performance.now() - cursorStart;
+        // Composite temp canvas onto main canvas
+        ctx.drawImage(tempCanvas, 0, 0);
 
-      const totalTime = performance.now() - drawStart;
-      if (totalTime > 16) { // Log if frame took longer than 16ms (60fps)
-        console.log('[VideoRenderer] Slow frame render:', {
-          totalTime: `${totalTime.toFixed(2)}ms`,
-          operations: Object.entries(timings).map(([key, time]) => 
-            `${key}: ${time.toFixed(2)}ms`
-          )
-        });
-      }
+        // Mouse cursor
+        const cursorStart = performance.now();
+        const interpolatedPosition = this.interpolateCursorPosition(video.currentTime, mousePositions, backgroundConfig);
+        if (interpolatedPosition) {
+            // Calculate base cursor position relative to original video
+            let cursorX = x + (interpolatedPosition.x * scaledWidth / video.videoWidth);
+            let cursorY = y + (interpolatedPosition.y * scaledHeight / video.videoHeight);
+
+            // If there's zoom, adjust cursor position using same transform
+            if (zoomState && zoomState.zoomFactor !== 1) {
+                const zoomedWidth = scaledWidth * zoomState.zoomFactor;
+                const zoomedHeight = scaledHeight * zoomState.zoomFactor;
+                const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
+                const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
+
+                // Apply same zoom transform to cursor position
+                cursorX = (cursorX - x) * zoomState.zoomFactor + x + zoomOffsetX;
+                cursorY = (cursorY - y) * zoomState.zoomFactor + y + zoomOffsetY;
+            }
+
+            const cursorScale = (backgroundConfig.cursorScale || 2) * (zoomState?.zoomFactor || 1);
+
+            this.drawMouseCursor(
+                ctx,
+                cursorX,
+                cursorY,
+                interpolatedPosition.isClicked || false,
+                cursorScale
+            );
+        }
+        const timings = { cursor: performance.now() - cursorStart };
+
+        const totalTime = performance.now() - drawStart;
+        if (totalTime > 16) { // Log if frame took longer than 16ms (60fps)
+            console.log('[VideoRenderer] Slow frame render:', {
+                totalTime: `${totalTime.toFixed(2)}ms`,
+                operations: Object.entries(timings).map(([key, time]) => 
+                    `${key}: ${time.toFixed(2)}ms`
+                )
+            });
+        }
 
     } finally {
-      this.isDrawing = false;
+        this.isDrawing = false;
+        ctx.restore();
     }
   };
 

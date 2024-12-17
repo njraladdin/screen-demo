@@ -17,37 +17,12 @@ export class VideoExporter {
   private lastProgress = 0;
 
   private setupMediaRecorder(stream: MediaStream): MediaRecorder {
-    const highQualityOptions = {
-      videoBitsPerSecond: 20000000,  // Increased to 20 Mbps
-      // Add more codec-specific options
-      videoConstraints: {
-        width: { ideal: 3840 },      // Support up to 4K
-        height: { ideal: 2160 },
-        frameRate: { ideal: 60 }
-      }
+    const options = {
+      videoBitsPerSecond: 50000000, // Increase to 50 Mbps
+      mimeType: 'video/webm;codecs=vp9' // Force VP9 for better quality
     };
 
-    // Try MP4 with H264 first (best quality)
-    if (MediaRecorder.isTypeSupported('video/mp4;codecs=h264,aac')) {
-      return new MediaRecorder(stream, {
-        mimeType: 'video/mp4;codecs=h264,aac',
-        ...highQualityOptions
-      });
-    }
-    
-    // Try WebM with VP9 (good quality alternative)
-    if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
-      return new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9,opus',
-        ...highQualityOptions
-      });
-    }
-
-    // Fallback to WebM with VP8
-    return new MediaRecorder(stream, {
-      mimeType: 'video/webm;codecs=vp8,opus',
-      ...highQualityOptions
-    });
+    return new MediaRecorder(stream, options);
   }
 
   async exportVideo(options: ExportOptions): Promise<Blob> {
@@ -63,8 +38,11 @@ export class VideoExporter {
     const originalTime = video.currentTime;
     const originalPaused = video.paused;
 
-    // Ensure high quality canvas capture
-    const stream = canvas.captureStream(60);  // Request 60fps
+    // Use requestVideoFrameCallback if available for better frame timing
+    const useFrameCallback = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+    
+    // Use higher framerate for capture
+    const stream = canvas.captureStream(60);
     
     // Force high quality canvas settings
     canvas.width = video.videoWidth;   // Match source resolution
@@ -114,22 +92,22 @@ export class VideoExporter {
         const timeUpdateHandler = () => {
           if (recordingComplete) return;
 
-          // Request animation frame for smoother rendering
-          requestAnimationFrame(() => {
-            const renderContext = {
-              video,
-              canvas,
-              tempCanvas,
-              segment,
-              backgroundConfig: options.backgroundConfig,
-              mousePositions: options.mousePositions,
-              currentTime: video.currentTime
-            };
+          const renderContext = {
+            video,
+            canvas,
+            tempCanvas,
+            segment,
+            backgroundConfig: options.backgroundConfig,
+            mousePositions: options.mousePositions,
+            currentTime: video.currentTime
+          };
 
-            // Ensure video is ready
+          // Simpler frame handling - just use requestAnimationFrame
+          requestAnimationFrame(() => {
             if (video.readyState >= 2) {
               videoRenderer.drawFrame(renderContext, { 
-                exportMode: true
+                exportMode: true,
+                highQuality: true // Add this flag
               });
             }
 
