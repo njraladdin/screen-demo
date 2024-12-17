@@ -445,14 +445,12 @@ function App() {
     };
   }, []);
 
-  // Add debug logging utility
+  // Replace the debugLog function
   const debugLog = (message: string, data?: any) => {
-    if (process.env.NODE_ENV === 'development') {
-      if (data) {
-        console.log(`[DEBUG] ${message}`, data);
-      } else {
-        console.log(`[DEBUG] ${message}`);
-      }
+    if (data) {
+      console.log(`[DEBUG] ${message}`, data);
+    } else {
+      console.log(`[DEBUG] ${message}`);
     }
   };
 
