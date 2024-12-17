@@ -264,19 +264,20 @@ export class VideoController {
   public handleVideoSourceChange = (videoUrl: string) => {
     if (!this.video || !this.canvas) return;
     
-    // Reset canvas dimensions to match video's native resolution
+    // Actually use the videoUrl
+    this.video.src = videoUrl;
+    
     const handleMetadata = () => {
-      this.canvas.width = this.video.videoWidth;
-      this.canvas.height = this.video.videoHeight;
-      
-      // Force high quality scaling
-      const ctx = this.canvas.getContext('2d');
-      if (ctx) {
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-      }
-      
-      this.video.removeEventListener('loadedmetadata', handleMetadata);
+        this.canvas.width = this.video.videoWidth;
+        this.canvas.height = this.video.videoHeight;
+        
+        const ctx = this.canvas.getContext('2d');
+        if (ctx) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+        }
+        
+        this.video.removeEventListener('loadedmetadata', handleMetadata);
     };
 
     this.video.addEventListener('loadedmetadata', handleMetadata);

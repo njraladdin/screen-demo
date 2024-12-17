@@ -38,9 +38,6 @@ export class VideoExporter {
     const originalTime = video.currentTime;
     const originalPaused = video.paused;
 
-    // Use requestVideoFrameCallback if available for better frame timing
-    const useFrameCallback = 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
-    
     // Use higher framerate for capture
     const stream = canvas.captureStream(60);
     
@@ -105,10 +102,7 @@ export class VideoExporter {
           // Simpler frame handling - just use requestAnimationFrame
           requestAnimationFrame(() => {
             if (video.readyState >= 2) {
-              videoRenderer.drawFrame(renderContext, { 
-                exportMode: true,
-                highQuality: true // Add this flag
-              });
+              videoRenderer.drawFrame(renderContext, { exportMode: true });
             }
 
             const currentProgress = (video.currentTime - segment.trimStart) / (segment.trimEnd - segment.trimStart) * 100;

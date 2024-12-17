@@ -87,9 +87,16 @@ export class VideoRenderer {
     const { video, canvas, tempCanvas, segment, backgroundConfig, mousePositions } = context;
     if (!video || !canvas || !segment) return;
 
-    const ctx = canvas.getContext('2d');
+    const isExportMode = options.exportMode || false;
+    const quality = isExportMode ? 'high' : 'medium';
+    
+    const ctx = canvas.getContext('2d', {
+        alpha: false,
+        willReadFrequently: false
+    });
     if (!ctx) return;
 
+    ctx.imageSmoothingQuality = quality;
     this.isDrawing = true;
     const drawStart = performance.now();
 
@@ -108,7 +115,8 @@ export class VideoRenderer {
         // Setup temporary canvas for rounded corners and shadows
         tempCanvas.width = canvas.width;
         tempCanvas.height = canvas.height;
-        const tempCtx = tempCanvas.getContext('2d')!;
+        const tempCtx = tempCanvas.getContext('2d');
+        if (!tempCtx) return;
 
         // Clear both canvases
         ctx.clearRect(0, 0, canvas.width, canvas.height);
