@@ -1,6 +1,8 @@
-# Screen Demo
-
-An open-source screen recording and editing tool with zoom animation capabilities. A lightweight open-source alternative to Screen.studio.
+<div align="center">
+  <img src="src/assets/logo.svg" alt="Screen Demo Logo" width="120" height="120" />
+  <h1>Screen Demo</h1>
+  <p>An open-source screen recording and editing tool with zoom animation capabilities.<br/>A lightweight open-source alternative to Screen.studio.</p>
+</div>
 
 ![Demo Screenshot](public/screenshot.png)
 
@@ -26,7 +28,7 @@ An open-source screen recording and editing tool with zoom animation capabilitie
 
 ## Installation
 
-1. Download the latest release for your platform from the [Releases](https://github.com/yourusername/screen-demo/releases) page
+1. Download the latest release for your platform from the [Releases](https://github.com/njraladdin/screen-demo/releases) page
 
 2. Or build from source:
 ```bash
@@ -62,15 +64,7 @@ Requirements:
 - Rust toolchain
 - Windows 10+ (for screen capture)
 
-## Contributing
-
-Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details.
-
 ## License
 
 This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
 
-## Acknowledgments
-
-- Inspired by [Screen.studio](https://screen.studio)
-- Uses [windows-capture](https://crates.io/crates/windows-capture) for screen recording
