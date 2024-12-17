@@ -194,7 +194,7 @@ function App() {
       if (currentVideo) {
         setShowConfirmNewRecording(true);
       } else {
-        await startNewRecording(0);
+        await startNewRecording('0');
       }
     } catch (err) {
       console.error("Failed to handle start recording:", err);
@@ -784,7 +784,7 @@ function App() {
                       </div>
                       <div className="space-y-4">
                         <div>
-                          <label className="block text-sm font-medium text-[#d7dadc] mb-2">Zoom Factor</label>
+                          <label className="text-sm font-medium text-[#d7dadc] mb-2">Zoom Factor</label>
                           <div className="space-y-2">
                             <input type="range" min="1" max="3" step="0.1" value={zoomFactor} onChange={(e) => {const newValue = Number(e.target.value); setZoomFactor(newValue); throttledUpdateZoom({ zoomFactor: newValue });}} className="w-full accent-[#0079d3]" />
                             <div className="flex justify-between text-xs text-[#818384] font-medium">
@@ -796,11 +796,11 @@ function App() {
                         </div>
                         <div className="space-y-4">
                           <div>
-                            <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Horizontal Position</span><span className="text-[#818384]">{Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionX ?? 0.5) * 100)}%</span></label>
+                            <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Horizontal Position</span><span className="text-[#818384]">{Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionX ?? 0.5) * 100)}%</span></label>
                             <input type="range" min="0" max="1" step="0.01" value={segment?.zoomKeyframes[editingKeyframeId!]?.positionX ?? 0.5} onChange={(e) => {throttledUpdateZoom({ positionX: Number(e.target.value) });}} className="w-full accent-[#0079d3]" />
                           </div>
                           <div>
-                            <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Vertical Position</span><span className="text-[#818384]">{Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionY ?? 0.5) * 100)}%</span></label>
+                            <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Vertical Position</span><span className="text-[#818384]">{Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionY ?? 0.5) * 100)}%</span></label>
                             <input type="range" min="0" max="1" step="0.01" value={segment?.zoomKeyframes[editingKeyframeId!]?.positionY ?? 0.5} onChange={(e) => {throttledUpdateZoom({ positionY: Number(e.target.value) });}} className="w-full accent-[#0079d3]" />
                           </div>
                         </div>
@@ -819,7 +819,7 @@ function App() {
                   <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Background & Layout</h2>
                   <div className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
                         <span>Video Size</span>
                         <span className="text-[#818384]">{backgroundConfig.scale}%</span>
                       </label>
@@ -829,7 +829,7 @@ function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
                         <span>Roundness</span>
                         <span className="text-[#818384]">{backgroundConfig.borderRadius}px</span>
                       </label>
@@ -839,7 +839,7 @@ function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
                         <span>Shadow</span>
                         <span className="text-[#818384]">{backgroundConfig.shadow || 0}px</span>
                       </label>
@@ -849,7 +849,7 @@ function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-3">Background Style</label>
+                      <label className="text-sm font-medium text-[#d7dadc] mb-3">Background Style</label>
                       <div className="grid grid-cols-4 gap-2">
                         {Object.entries(GRADIENT_PRESETS).map(([key, gradient]) => (
                           <button 
@@ -871,7 +871,7 @@ function App() {
                   <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Cursor Settings</h2>
                   <div className="space-y-4">
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
                         <span>Cursor Size</span>
                         <span className="text-[#818384]">{backgroundConfig.cursorScale || 2}x</span>
                       </label>
@@ -886,7 +886,7 @@ function App() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
+                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
                         <span>Movement Smoothing</span>
                         <span className="text-[#818384]">{backgroundConfig.cursorSmoothness || 5}</span>
                       </label>
@@ -1027,7 +1027,16 @@ function App() {
             <p className="text-[#818384] mb-6">Starting a new recording will discard your current video. Are you sure you want to continue?</p>
             <div className="flex justify-end gap-3">
               <Button variant="outline" onClick={() => {setShowConfirmNewRecording(false); setSelectedMonitor(null);}} className="bg-transparent border-[#343536] text-[#d7dadc] hover:bg-[#272729] hover:text-[#d7dadc]">Cancel</Button>
-              <Button onClick={() => {setShowConfirmNewRecording(false); startNewRecording(selectedMonitor ?? 0); setSelectedMonitor(null);}} className="bg-[#0079d3] hover:bg-[#1484d6] text-white">Start New Recording</Button>
+              <Button 
+                onClick={() => {
+                  setShowConfirmNewRecording(false); 
+                  startNewRecording(selectedMonitor ? selectedMonitor : '0'); 
+                  setSelectedMonitor(null);
+                }} 
+                className="bg-[#0079d3] hover:bg-[#1484d6] text-white"
+              >
+                Start New Recording
+              </Button>
             </div>
           </div>
         </div>

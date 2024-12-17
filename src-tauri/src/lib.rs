@@ -176,13 +176,19 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                 let mut point = POINT::default();
                 if GetCursorPos(&mut point).as_bool() {
                     let is_clicked = IS_MOUSE_CLICKED.load(Ordering::SeqCst);
+                    
+                    // Adjust coordinates relative to the monitor's position
+                    let relative_x = point.x - MONITOR_X;
+                    let relative_y = point.y - MONITOR_Y;
+                    
                     let mouse_pos = MousePosition {
-                        x: point.x - MONITOR_X,
-                        y: point.y - MONITOR_Y,
+                        x: relative_x,
+                        y: relative_y,
                         timestamp: self.start.elapsed().as_secs_f64(),
                         isClicked: is_clicked,
                     };
                     
+                    // Only store positions that are within the monitor bounds
                     if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
                         positions.push_back(mouse_pos);
                     }
@@ -297,7 +303,7 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
         println!("Cleared previous mouse positions");
     }
 
-    let monitor = if let Some(id) = monitor_id {
+    let monitor = if let Some(ref id) = monitor_id {
         println!("Trying to get monitor with ID: {}", id);
         let index = id.parse::<usize>().map_err(|e| {
             println!("Failed to parse monitor ID: {:?}", e);
@@ -316,29 +322,34 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
         })?
     };
 
-    // Get monitor dimensions for cursor offset
-    let width = monitor.width().map_err(|e| {
-        println!("Failed to get monitor width: {:?}", e);
-        e.to_string()
-    })?;
-    let height = monitor.height().map_err(|e| {
-        println!("Failed to get monitor height: {:?}", e);
-        e.to_string()
-    })?;
-
-    println!("Monitor dimensions: {}x{}", width, height);
-
-    // For now, assume monitor position is (0,0)
-    let monitor_x = 0;
-    let monitor_y = 0;
-
-    println!("Using monitor position: ({}, {})", monitor_x, monitor_y);
-
-    // Store positions for cursor adjustment
+    // Get monitor info to get the correct position
     unsafe {
-        MONITOR_X = monitor_x;
-        MONITOR_Y = monitor_y;
-        println!("Stored monitor position in static variables");
+        let mut monitors: Vec<HMONITOR> = Vec::new();
+        let monitors_ptr = &mut monitors as *mut Vec<HMONITOR>;
+        
+        EnumDisplayMonitors(
+            HDC::default(),
+            None,
+            Some(monitor_enum_proc),
+            LPARAM(monitors_ptr as isize),
+        );
+
+        let monitor_index = monitor_id
+            .as_ref()
+            .and_then(|id| id.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        if let Some(&hmonitor) = monitors.get(monitor_index) {
+            let mut monitor_info: MONITORINFOEXW = zeroed();
+            monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            
+            if GetMonitorInfoW(hmonitor, &mut monitor_info.monitorInfo as *mut _).as_bool() {
+                let rect = monitor_info.monitorInfo.rcMonitor;
+                MONITOR_X = rect.left;
+                MONITOR_Y = rect.top;
+                println!("Set monitor position to: ({}, {})", MONITOR_X, MONITOR_Y);
+            }
+        }
     }
 
     // Configure capture settings
