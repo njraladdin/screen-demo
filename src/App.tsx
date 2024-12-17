@@ -7,6 +7,7 @@ import { videoRenderer } from '@/lib/videoRenderer';
 import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition } from '@/types/video';
 import { videoExporter } from '@/lib/videoExporter';
 import { createVideoController } from '@/lib/videoController';
+import logo from '@/assets/logo.svg';
 
 // Replace the debounce utility with throttle
 const useThrottle = (callback: Function, limit: number) => {
@@ -685,10 +686,21 @@ function App() {
     <div className="min-h-screen bg-[#1a1a1b]">
       <header className="bg-[#1a1a1b] border-b border-[#343536]">
         <div className="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-[#d7dadc]">Screen Demo</h1>
+          <div className="flex items-center gap-2">
+            <img src={logo} alt="Screen Demo Logo" className="w-8 h-8" />
+            <h1 className="text-2xl font-bold text-[#d7dadc]">Screen Demo</h1>
+          </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              <Button onClick={isRecording ? handleStopRecording : handleStartRecording} disabled={isProcessing || isLoadingVideo} className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${isRecording ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}>
+              <Button 
+                onClick={isRecording ? handleStopRecording : handleStartRecording} 
+                disabled={isProcessing || isLoadingVideo} 
+                className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
+                  isRecording 
+                    ? 'bg-red-500 hover:bg-red-600 text-white'
+                    : 'bg-[#FF26BE] hover:bg-[#FF26BE]/90 text-white'
+                }`}
+              >
                 {isRecording ? (
                   <><StopCircle className="w-4 h-4 mr-2" />Stop Recording</>
                 ) : isLoadingVideo ? (
@@ -702,7 +714,19 @@ function App() {
               </Button>
               {isRecording && <span className="text-red-500 font-medium">{formatTime(recordingDuration)}</span>}
             </div>
-            {currentVideo && <Button onClick={handleExport} disabled={isProcessing} className={`flex items-center px-4 py-2 h-9 text-sm font-medium ${isProcessing ? 'bg-gray-600 text-gray-400 cursor-not-allowed' : 'bg-[#0079d3] hover:bg-[#1484d6] text-white'}`}><Download className="w-4 h-4 mr-2" />Export Video</Button>}
+            {currentVideo && (
+              <Button 
+                onClick={handleExport} 
+                disabled={isProcessing} 
+                className={`flex items-center px-4 py-2 h-9 text-sm font-medium ${
+                  isProcessing 
+                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
+                    : 'bg-[#9C17FF] hover:bg-[#9C17FF]/90 text-white'
+                }`}
+              >
+                <Download className="w-4 h-4 mr-2" />Export Video
+              </Button>
+            )}
           </div>
         </div>
       </header>
@@ -921,7 +945,17 @@ function App() {
           <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6">
             <div className="flex justify-between items-center mb-8">
               <h2 className="text-lg font-semibold text-[#d7dadc]">Timeline</h2>
-              <Button onClick={() => {handleAddKeyframe(); setActivePanel('zoom');}} disabled={isProcessing || !currentVideo} className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${!currentVideo || isProcessing ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed' : 'bg-[#0079d3] hover:bg-[#1484d6] text-white shadow-sm'}`}><Plus className="w-4 h-4 mr-2" />Add Zoom at Playhead</Button>
+              <Button 
+                onClick={() => {handleAddKeyframe(); setActivePanel('zoom');}} 
+                disabled={isProcessing || !currentVideo} 
+                className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
+                  !currentVideo || isProcessing 
+                    ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed' 
+                    : 'bg-[#0079d3] hover:bg-[#0079d3]/90 text-white shadow-sm'
+                }`}
+              >
+                <Plus className="w-4 h-4 mr-2" />Add Zoom at Playhead
+              </Button>
             </div>
 
             <div className="relative h-32">

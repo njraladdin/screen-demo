@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="primaryGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FF26BE" />
+      <stop offset="100%" style="stop-color:#9C17FF" />
+    </linearGradient>
+  </defs>
+
+  <!-- Clean rounded square background -->
+  <rect x="10" y="10" width="80" height="80" rx="12" fill="url(#primaryGradient)" />
+  
+  <!-- Screen recording frame symbol -->
+  <g fill="none" stroke="white" stroke-width="8" stroke-linejoin="round">
+    <!-- Outer frame representing screen -->
+    <rect x="30" y="28" width="40" height="44" rx="4" />
+    <!-- Recording indicator dot -->
+    <circle cx="50" cy="50" r="6" fill="white" stroke="none" />
+  </g>
+</svg> 

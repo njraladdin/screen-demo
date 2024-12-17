@@ -1,7 +1,76 @@
-# Tauri + React + Typescript
+# Screen Demo
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+An open-source screen recording and editing tool with zoom animation capabilities. A lightweight open-source alternative to Screen.studio.
 
-## Recommended IDE Setup
+![Demo Screenshot](public/screenshot.png)
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Features
+
+- **High Quality Screen Recording**
+  - Multi-monitor support
+  - 60 FPS recording
+  - Hardware-accelerated encoding
+  - Cursor movement capture
+
+- **Simple Video Editing**
+  - Add smooth zoom animations
+  - Customize background styles
+  - Adjust video scale and border radius
+  - Enhanced cursor visualization
+  - Trim video segments
+
+- **Export Options** 
+  - Export to WebM
+  - Up to 4K resolution support
+  - High bitrate options for quality
+
+## Installation
+
+1. Download the latest release for your platform from the [Releases](https://github.com/yourusername/screen-demo/releases) page
+
+2. Or build from source:
+```bash
+# Install dependencies
+npm install
+
+# Run in development
+npm run tauri dev
+
+# Build
+npm run tauri build
+```
+
+## Usage
+
+1. Click "Start Recording" and select your monitor
+2. Record your screen
+3. Stop recording when done
+4. Add zoom animations by clicking "Add Zoom at Playhead" 
+5. Adjust zoom level, position and timing
+6. Export the final video
+
+## Development
+
+Built with:
+- Tauri (Rust)
+- React
+- TypeScript
+- Windows Capture API
+
+Requirements:
+- Node.js 16+
+- Rust toolchain
+- Windows 10+ (for screen capture)
+
+## Contributing
+
+Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+## License
+
+This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
+
+## Acknowledgments
+
+- Inspired by [Screen.studio](https://screen.studio)
+- Uses [windows-capture](https://crates.io/crates/windows-capture) for screen recording
