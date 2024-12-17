@@ -90,9 +90,9 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         // Configure video encoding settings with actual monitor dimensions
         let encoder = VideoEncoder::new(
-            VideoSettingsBuilder::new(width, height)  // Use actual dimensions
-                .frame_rate(30)
-                .bitrate(5_000_000),
+            VideoSettingsBuilder::new(width, height)
+                .frame_rate(60)
+                .bitrate(20_000_000),  // Increased from 12Mbps to 20Mbps for better quality
             AudioSettingsBuilder::default().disabled(true),
             ContainerSettingsBuilder::default(),
             &video_path,

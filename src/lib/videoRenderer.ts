@@ -12,6 +12,7 @@ export interface RenderContext {
 
 export interface RenderOptions {
   exportMode?: boolean;
+  highQuality?: boolean;
 }
 
 interface CursorAnimationState {
@@ -50,18 +51,20 @@ export class VideoRenderer {
     console.log('[VideoRenderer] Starting animation');
     this.stopAnimation();
 
+    let lastFrameTime = performance.now();
+    const targetFrameInterval = 1000 / 60; // Target 60fps
+
     const animate = () => {
-      // Only continue animation if video is playing
-      if (renderContext.video.paused) {
-        this.stopAnimation();
-        return;
+      const now = performance.now();
+      const elapsed = now - lastFrameTime;
+
+      // Only render if enough time has passed for next frame
+      if (elapsed >= targetFrameInterval) {
+        this.drawFrame(renderContext)
+          .catch(err => console.error('[VideoRenderer] Draw error:', err));
+        lastFrameTime = now;
       }
 
-      // Draw frame regardless of video state
-      this.drawFrame(renderContext)
-        .catch(err => console.error('[VideoRenderer] Draw error:', err));
-      
-      // Continue animation
       this.animationFrame = requestAnimationFrame(animate);
     };
 
@@ -167,8 +170,23 @@ export class VideoRenderer {
       // Get interpolated zoom state for current time
       const zoomState = this.calculateCurrentZoomState(video.currentTime, segment);
 
-      tempCtx.imageSmoothingEnabled = true;
-      tempCtx.imageSmoothingQuality = options.exportMode ? 'high' : 'medium';
+      // Enable high quality rendering
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
+      // Use better quality settings for export mode
+      if (options.exportMode) {
+        tempCtx.imageSmoothingEnabled = true;
+        tempCtx.imageSmoothingQuality = 'high';
+        
+        // Ensure video frame is rendered at full quality
+        if (video.videoWidth > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          tempCanvas.width = video.videoWidth;
+          tempCanvas.height = video.videoHeight;
+        }
+      }
 
       if (zoomState && zoomState.zoomFactor !== 1) {
         tempCtx.save();

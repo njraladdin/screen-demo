@@ -17,26 +17,36 @@ export class VideoExporter {
   private lastProgress = 0;
 
   private setupMediaRecorder(stream: MediaStream): MediaRecorder {
-    // Try MP4 first
+    const highQualityOptions = {
+      videoBitsPerSecond: 20000000,  // Increased to 20 Mbps
+      // Add more codec-specific options
+      videoConstraints: {
+        width: { ideal: 3840 },      // Support up to 4K
+        height: { ideal: 2160 },
+        frameRate: { ideal: 60 }
+      }
+    };
+
+    // Try MP4 with H264 first (best quality)
     if (MediaRecorder.isTypeSupported('video/mp4;codecs=h264,aac')) {
       return new MediaRecorder(stream, {
         mimeType: 'video/mp4;codecs=h264,aac',
-        videoBitsPerSecond: 8000000
+        ...highQualityOptions
       });
     }
     
-    // Try WebM with VP9 (better quality)
+    // Try WebM with VP9 (good quality alternative)
     if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
       return new MediaRecorder(stream, {
         mimeType: 'video/webm;codecs=vp9,opus',
-        videoBitsPerSecond: 8000000
+        ...highQualityOptions
       });
     }
 
     // Fallback to WebM with VP8
     return new MediaRecorder(stream, {
       mimeType: 'video/webm;codecs=vp8,opus',
-      videoBitsPerSecond: 8000000
+      ...highQualityOptions
     });
   }
 
@@ -53,7 +63,27 @@ export class VideoExporter {
     const originalTime = video.currentTime;
     const originalPaused = video.paused;
 
-    const stream = canvas.captureStream(60);
+    // Ensure high quality canvas capture
+    const stream = canvas.captureStream(60);  // Request 60fps
+    
+    // Force high quality canvas settings
+    canvas.width = video.videoWidth;   // Match source resolution
+    canvas.height = video.videoHeight;
+    
+    const ctx = canvas.getContext('2d', {
+      alpha: false,
+      desynchronized: false,
+      willReadFrequently: false,
+    }) as CanvasRenderingContext2D | null;  // Explicitly type as CanvasRenderingContext2D
+    
+    if (ctx) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      
+      // Use only standard compositing operation
+      ctx.globalCompositeOperation = 'copy';  // Faster compositing
+    }
+
     const mediaRecorder = this.setupMediaRecorder(stream);
     const chunks: Blob[] = [];
     let recordingComplete = false;
@@ -84,39 +114,47 @@ export class VideoExporter {
         const timeUpdateHandler = () => {
           if (recordingComplete) return;
 
-          const currentProgress = (video.currentTime - segment.trimStart) / (segment.trimEnd - segment.trimStart) * 100;
-          
-          if (currentProgress === 0 && this.lastProgress > 90) {
-            console.log('[VideoExporter] Detected completion via progress drop', {
-              lastProgress: this.lastProgress,
-              currentProgress
-            });
-            video.removeEventListener('timeupdate', timeUpdateHandler);
-            mediaRecorder.stop();
-            resolve();
-            return;
-          }
+          // Request animation frame for smoother rendering
+          requestAnimationFrame(() => {
+            const renderContext = {
+              video,
+              canvas,
+              tempCanvas,
+              segment,
+              backgroundConfig: options.backgroundConfig,
+              mousePositions: options.mousePositions,
+              currentTime: video.currentTime
+            };
 
-          this.lastProgress = currentProgress;
-          options.onProgress?.(Math.min(currentProgress, 99.9));
+            // Ensure video is ready
+            if (video.readyState >= 2) {
+              videoRenderer.drawFrame(renderContext, { 
+                exportMode: true
+              });
+            }
 
-          const renderContext = {
-            video,
-            canvas,
-            tempCanvas,
-            segment,
-            backgroundConfig: options.backgroundConfig,
-            mousePositions: options.mousePositions,
-            currentTime: video.currentTime
-          };
+            const currentProgress = (video.currentTime - segment.trimStart) / (segment.trimEnd - segment.trimStart) * 100;
+            
+            if (currentProgress === 0 && this.lastProgress > 90) {
+              console.log('[VideoExporter] Detected completion via progress drop', {
+                lastProgress: this.lastProgress,
+                currentProgress
+              });
+              video.removeEventListener('timeupdate', timeUpdateHandler);
+              mediaRecorder.stop();
+              resolve();
+              return;
+            }
 
-          videoRenderer.drawFrame(renderContext, { exportMode: true });
+            this.lastProgress = currentProgress;
+            options.onProgress?.(Math.min(currentProgress, 99.9));
 
-          if (recordingComplete) {
-            video.removeEventListener('timeupdate', timeUpdateHandler);
-            mediaRecorder.stop();
-            resolve();
-          }
+            if (recordingComplete) {
+              video.removeEventListener('timeupdate', timeUpdateHandler);
+              mediaRecorder.stop();
+              resolve();
+            }
+          });
         };
 
         video.addEventListener('timeupdate', timeUpdateHandler);
