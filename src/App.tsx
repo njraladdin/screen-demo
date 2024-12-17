@@ -21,6 +21,27 @@ const useThrottle = (callback: Function, limit: number) => {
   }, [callback, limit]);
 };
 
+// Add these interfaces near the top of the file
+interface MonitorInfo {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  x: number;
+  y: number;
+  is_primary: boolean;
+}
+
+// Add this helper function near the top of the file
+const sortMonitorsByPosition = (monitors: MonitorInfo[]) => {
+  return [...monitors]
+    .sort((a, b) => a.x - b.x)
+    .map((monitor, index) => ({
+      ...monitor,
+      name: `Display ${index + 1}${monitor.is_primary ? ' (Primary)' : ''}`
+    }));
+};
+
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -137,24 +158,56 @@ function App() {
     renderFrame();
   }, [backgroundConfig, renderFrame]);
 
-  // Update handleStartRecording to show confirmation when needed
+  // Add these state variables inside App component
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [showMonitorSelect, setShowMonitorSelect] = useState(false);
+  const [selectedMonitor, setSelectedMonitor] = useState<string | null>(null);
+
+  // Add this function to fetch monitors
+  const getMonitors = async () => {
+    try {
+      const monitors = await invoke<MonitorInfo[]>("get_monitors");
+      // Sort monitors before setting state
+      const sortedMonitors = sortMonitorsByPosition(monitors);
+      setMonitors(sortedMonitors);
+      return sortedMonitors;
+    } catch (err) {
+      console.error("Failed to get monitors:", err);
+      setError(err as string);
+      return [];
+    }
+  };
+
+  // Update handleStartRecording
   async function handleStartRecording() {
     if (isRecording) return;
 
-    if (currentVideo) {
-      setShowConfirmNewRecording(true);
-      return;
+    try {
+      const monitors = await getMonitors();
+      
+      if (monitors.length > 1) {
+        setShowMonitorSelect(true);
+        return;
+      }
+      
+      // If only one monitor, use it directly
+      if (currentVideo) {
+        setShowConfirmNewRecording(true);
+      } else {
+        await startNewRecording(0);
+      }
+    } catch (err) {
+      console.error("Failed to handle start recording:", err);
+      setError(err as string);
     }
-
-    await startNewRecording();
   }
 
-  // Separate the actual recording logic
-  async function startNewRecording() {
+  // Update startNewRecording to handle string IDs
+  async function startNewRecording(monitorId: string) {
     try {
       console.log('Starting new recording, clearing states');
       // Clear all states first
-      setMousePositions([]);  // Clear first
+      setMousePositions([]);
       setIsVideoReady(false);
       setCurrentTime(0);
       setDuration(0);
@@ -187,7 +240,7 @@ function App() {
       }
 
       // Now start the new recording
-      await invoke("start_recording");
+      await invoke("start_recording", { monitorId });
       setIsRecording(true);
       setError(null);
 
@@ -940,8 +993,49 @@ function App() {
             <h3 className="text-lg font-semibold text-[#d7dadc] mb-4">Start New Recording?</h3>
             <p className="text-[#818384] mb-6">Starting a new recording will discard your current video. Are you sure you want to continue?</p>
             <div className="flex justify-end gap-3">
-              <Button variant="outline" onClick={() => setShowConfirmNewRecording(false)} className="bg-transparent border-[#343536] text-[#d7dadc] hover:bg-[#272729] hover:text-[#d7dadc]">Cancel</Button>
-              <Button onClick={() => {setShowConfirmNewRecording(false); startNewRecording();}} className="bg-[#0079d3] hover:bg-[#1484d6] text-white">Start New Recording</Button>
+              <Button variant="outline" onClick={() => {setShowConfirmNewRecording(false); setSelectedMonitor(null);}} className="bg-transparent border-[#343536] text-[#d7dadc] hover:bg-[#272729] hover:text-[#d7dadc]">Cancel</Button>
+              <Button onClick={() => {setShowConfirmNewRecording(false); startNewRecording(selectedMonitor ?? 0); setSelectedMonitor(null);}} className="bg-[#0079d3] hover:bg-[#1484d6] text-white">Start New Recording</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showMonitorSelect && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536] max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-[#d7dadc] mb-4">Select Monitor</h3>
+            <div className="space-y-3 mb-6">
+              {monitors.map((monitor) => (
+                <button
+                  key={monitor.id}
+                  onClick={() => {
+                    setShowMonitorSelect(false);
+                    if (currentVideo) {
+                      setShowConfirmNewRecording(true);
+                      setSelectedMonitor(monitor.id);
+                    } else {
+                      startNewRecording(monitor.id);
+                    }
+                  }}
+                  className="w-full p-4 rounded-lg border border-[#343536] hover:bg-[#272729] transition-colors text-left"
+                >
+                  <div className="font-medium text-[#d7dadc]">
+                    {monitor.name}
+                  </div>
+                  <div className="text-sm text-[#818384] mt-1">
+                    {monitor.width}x{monitor.height} at ({monitor.x}, {monitor.y})
+                  </div>
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <Button 
+                onClick={() => setShowMonitorSelect(false)} 
+                variant="outline" 
+                className="bg-transparent border-[#343536] text-[#d7dadc] hover:bg-[#272729] hover:text-[#d7dadc]"
+              >
+                Cancel
+              </Button>
             </div>
           </div>
         </div>

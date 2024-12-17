@@ -1,6 +1,2 @@
-
-
-
--fix recording quality, some artfiacts appearing 
-- fix loading after recording taking too long 
--small ui improvements 
+test with real demo 
+brand 

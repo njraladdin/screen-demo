@@ -19,6 +19,11 @@ use serde::{Serialize, Deserialize};
 use rdev::{listen, EventType};
 use tauri::{Manager, Emitter};
 use std::io::Read;
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
+};
+use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+use std::mem::zeroed;
 
 // Global static variables that can be safely accessed from multiple threads
 static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
@@ -34,6 +39,17 @@ pub struct MousePosition {
     y: i32,
     timestamp: f64,
     isClicked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    id: String,
+    name: String,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    is_primary: bool,
 }
 
 // Add this global static for storing mouse positions
@@ -196,10 +212,76 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
     }
 }
 
+// Add the monitor enumeration callback
+extern "system" fn monitor_enum_proc(
+    monitor: HMONITOR,
+    _: HDC,
+    _: *mut RECT,
+    data: LPARAM,
+) -> BOOL {
+    unsafe {
+        let monitors = &mut *(data.0 as *mut Vec<HMONITOR>);
+        monitors.push(monitor);
+        BOOL::from(true)
+    }
+}
+
+// Replace the get_monitors command with the Win32 version
+#[tauri::command]
+async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
+    println!("Starting monitor enumeration using Win32 API...");
+    
+    unsafe {
+        let mut monitors: Vec<HMONITOR> = Vec::new();
+        let monitors_ptr = &mut monitors as *mut Vec<HMONITOR>;
+        
+        EnumDisplayMonitors(
+            HDC::default(),
+            None,
+            Some(monitor_enum_proc),
+            LPARAM(monitors_ptr as isize),
+        );
+
+        println!("Found {} monitor handles", monitors.len());
+        
+        let mut monitor_infos = Vec::new();
+        
+        for (index, &monitor) in monitors.iter().enumerate() {
+            let mut monitor_info: MONITORINFOEXW = zeroed();
+            monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+            
+            if GetMonitorInfoW(monitor, &mut monitor_info.monitorInfo as *mut _).as_bool() {
+                let rect = monitor_info.monitorInfo.rcMonitor;
+                println!("Monitor {}: Position ({}, {}), Size {}x{}", 
+                    index,
+                    rect.left, rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top
+                );
+                
+                monitor_infos.push(MonitorInfo {
+                    id: index.to_string(),
+                    name: format!("Display {}", index + 1),
+                    x: rect.left,
+                    y: rect.top,
+                    width: (rect.right - rect.left) as u32,
+                    height: (rect.bottom - rect.top) as u32,
+                    is_primary: monitor_info.monitorInfo.dwFlags & 1 == 1,
+                });
+            } else {
+                println!("Failed to get info for monitor {}", index);
+            }
+        }
+
+        println!("Monitor details: {:#?}", monitor_infos);
+        Ok(monitor_infos)
+    }
+}
+
 // Tauri command that starts the recording process
 #[tauri::command]
-async fn start_recording() -> Result<(), String> {
-    println!("Starting recording");
+async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
+    println!("Starting recording with monitor_id: {:?}", monitor_id);
 
     if RECORDING.load(Ordering::SeqCst) {
         println!("Already recording, returning error");
@@ -215,20 +297,49 @@ async fn start_recording() -> Result<(), String> {
         println!("Cleared previous mouse positions");
     }
 
-    let monitor = Monitor::primary().map_err(|e| {
-        println!("Failed to get primary monitor: {:?}", e);
+    let monitor = if let Some(id) = monitor_id {
+        println!("Trying to get monitor with ID: {}", id);
+        let index = id.parse::<usize>().map_err(|e| {
+            println!("Failed to parse monitor ID: {:?}", e);
+            "Invalid monitor ID".to_string()
+        })?;
+        
+        Monitor::from_index(index + 1).map_err(|e| {
+            println!("Failed to get monitor from index: {:?}", e);
+            e.to_string()
+        })?
+    } else {
+        println!("No monitor ID provided, using primary");
+        Monitor::primary().map_err(|e| {
+            println!("Failed to get primary monitor: {:?}", e);
+            e.to_string()
+        })?
+    };
+
+    // Get monitor dimensions for cursor offset
+    let width = monitor.width().map_err(|e| {
+        println!("Failed to get monitor width: {:?}", e);
+        e.to_string()
+    })?;
+    let height = monitor.height().map_err(|e| {
+        println!("Failed to get monitor height: {:?}", e);
         e.to_string()
     })?;
 
-    // Get monitor position - for now, assume primary monitor starts at (0,0)
-    // We'll adjust this if needed based on testing
-    unsafe {
-        MONITOR_X = 0;
-        MONITOR_Y = 0;
-        println!("Set monitor offset to: ({}, {})", MONITOR_X, MONITOR_Y);
-    }
+    println!("Monitor dimensions: {}x{}", width, height);
 
-    println!("Successfully got primary monitor");
+    // For now, assume monitor position is (0,0)
+    let monitor_x = 0;
+    let monitor_y = 0;
+
+    println!("Using monitor position: ({}, {})", monitor_x, monitor_y);
+
+    // Store positions for cursor adjustment
+    unsafe {
+        MONITOR_X = monitor_x;
+        MONITOR_Y = monitor_y;
+        println!("Stored monitor position in static variables");
+    }
 
     // Configure capture settings
     let settings = Settings::new(
@@ -247,36 +358,11 @@ async fn start_recording() -> Result<(), String> {
     // Signal that we should start listening for clicks
     SHOULD_LISTEN_CLICKS.store(true, Ordering::SeqCst);
 
-    // Start mouse click listener
-    thread::spawn(|| {
-        if let Err(error) = listen(|event| {
-            // Check if we should still be listening
-            if !SHOULD_LISTEN_CLICKS.load(Ordering::SeqCst) {
-                return;
-            }
-            match event.event_type {
-                EventType::ButtonPress(button) => {
-                    if button == rdev::Button::Left {
-                        IS_MOUSE_CLICKED.store(true, Ordering::SeqCst);
-                        println!("Mouse clicked!");
-                    }
-                }
-                EventType::ButtonRelease(button) => {
-                    if button == rdev::Button::Left {
-                        IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
-                        println!("Mouse released!");
-                    }
-                }
-                _ => {}
-            }
-        }) {
-            eprintln!("Error: {:?}", error);
-        }
-    });
-
     // Spawn new thread for capture process
     thread::spawn(move || {
-        CaptureHandler::start(settings).expect("Screen capture failed");
+        if let Err(e) = CaptureHandler::start(settings) {
+            eprintln!("Screen capture failed: {:?}", e);
+        }
     });
 
     // Update recording state
@@ -287,7 +373,7 @@ async fn start_recording() -> Result<(), String> {
 
 // Tauri command that stops the recording process
 #[tauri::command]
-async fn stop_recording(app_handle: tauri::AppHandle) -> Result<(Vec<u8>, Vec<MousePosition>), String> {
+async fn stop_recording(_: tauri::AppHandle) -> Result<(Vec<u8>, Vec<MousePosition>), String> {
     println!("Stopping recording and collecting mouse data...");
 
     if !RECORDING.load(Ordering::SeqCst) {
@@ -359,6 +445,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
+            get_monitors,
             get_mouse_positions,
         ])
         .run(tauri::generate_context!())
