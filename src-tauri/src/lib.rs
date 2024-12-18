@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use std::thread;
-use std::fs::{self, File};
+use std::fs::File;
 use std::env;
-use std::io::{self, Read, Seek};
+use std::io::{Read, Seek};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
     encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder},
@@ -24,6 +24,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
 use std::mem::zeroed;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use std::sync::Arc;
+use parking_lot::Mutex as ParkingMutex;
+use memmap2::Mmap;
+use std::sync::atomic::AtomicU16;
+use tiny_http::{Server, Response, StatusCode};
 
 // Global static variables that can be safely accessed from multiple threads
 static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
@@ -34,6 +39,8 @@ static SHOULD_LISTEN_CLICKS: AtomicBool = AtomicBool::new(false);
 static VIDEO_DATA: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static ENCODING_FINISHED: AtomicBool = AtomicBool::new(false);
 static ENCODER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static VIDEO_MMAP: ParkingMutex<Option<Arc<Mmap>>> = ParkingMutex::new(None);
+static PORT: AtomicU16 = AtomicU16::new(0);
 
 // Add these new structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,7 +150,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         // Monitor for potential frame drops (expecting ~16.7ms between frames at 60fps)
         if frame_time.as_millis() > 20 {
             self.dropped_frames += 1;
-            println!("Potential frame drop: {}ms between frames", frame_time.as_millis());
+            //println!("Potential frame drop: {}ms between frames", frame_time.as_millis());
         }
 
         self.frame_count += 1;
@@ -263,6 +270,8 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         // Ensure states are reset
         ENCODER_ACTIVE.store(false, Ordering::SeqCst);
         ENCODING_FINISHED.store(true, Ordering::SeqCst);
+        RECORDING.store(false, Ordering::SeqCst);
+        cleanup_resources();
         Ok(())
     }
 }
@@ -333,15 +342,41 @@ async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
     }
 }
 
-// Tauri command that starts the recording process
+// Add this function to clean up resources
+fn cleanup_resources() {
+    // Drop the memory map
+    *VIDEO_MMAP.lock() = None;
+    
+    // Clean up video path
+    unsafe {
+        if let Some(path) = &VIDEO_PATH {
+            // Try to remove the temporary file
+            let _ = std::fs::remove_file(path);
+            VIDEO_PATH = None;
+        }
+    }
+}
+
+// Modify start_recording
 #[tauri::command]
 async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
     println!("Starting recording with monitor_id: {:?}", monitor_id);
 
     if RECORDING.load(Ordering::SeqCst) {
-        println!("Already recording, returning error");
-        return Err("Already recording".to_string());
+        if !ENCODER_ACTIVE.load(Ordering::SeqCst) {
+            println!("Detected stale recording state, resetting...");
+            RECORDING.store(false, Ordering::SeqCst);
+            SHOULD_STOP.store(false, Ordering::SeqCst);
+            ENCODING_FINISHED.store(false, Ordering::SeqCst);
+            cleanup_resources();
+        } else {
+            println!("Already recording, returning error");
+            return Err("Already recording".to_string());
+        }
     }
+
+    // Clean up any existing resources before starting new recording
+    cleanup_resources();
 
     // Reset all states
     SHOULD_STOP.store(false, Ordering::SeqCst);
@@ -439,38 +474,136 @@ const CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
 // Add this new command
 #[tauri::command]
 async fn get_video_chunk(chunk_index: usize) -> Result<String, String> {
-    unsafe {
-        if let Some(path) = &VIDEO_PATH {
-            match File::open(path) {
-                Ok(mut file) => {
-                    // Seek to the correct position
-                    if let Err(e) = file.seek(std::io::SeekFrom::Start((chunk_index * CHUNK_SIZE) as u64)) {
-                        return Err(format!("Failed to seek: {}", e));
-                    }
-
-                    let mut buffer = vec![0u8; CHUNK_SIZE];
-                    match file.read(&mut buffer) {
-                        Ok(n) => {
-                            buffer.truncate(n); // Only keep what we actually read
-                            Ok(BASE64.encode(&buffer))
-                        },
-                        Err(e) => Err(format!("Failed to read chunk: {}", e))
-                    }
-                },
-                Err(e) => Err(format!("Failed to open video file: {}", e))
-            }
-        } else {
-            Err("No video path available".to_string())
+    if let Some(mmap) = VIDEO_MMAP.lock().as_ref() {
+        let start = chunk_index * CHUNK_SIZE;
+        let end = (start + CHUNK_SIZE).min(mmap.len());
+        
+        if start >= mmap.len() {
+            return Err("Chunk index out of bounds".to_string());
         }
+
+        let chunk = &mmap[start..end];
+        Ok(BASE64.encode(chunk))
+    } else {
+        Err("No video file available".to_string())
     }
 }
 
-// Modify stop_recording to return metadata instead of the full file
+// Initialize the memory map when recording stops
+fn init_video_mmap() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        if let Some(path) = &VIDEO_PATH {
+            let file = File::open(path)?;
+            let mmap = Mmap::map(&file)?;
+            *VIDEO_MMAP.lock() = Some(Arc::new(mmap));
+        }
+    }
+    Ok(())
+}
+
+fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Error>> {
+    // Try ports starting from 8000
+    let mut port = 8000;
+    let server = loop {
+        if let Ok(server) = Server::http(format!("127.0.0.1:{}", port)) {
+            break server;
+        }
+        port += 1;
+        if port > 9000 {
+            return Err("No available ports".into());
+        }
+    };
+    
+    PORT.store(port, Ordering::SeqCst);
+    
+    thread::spawn(move || {
+        let file = File::open(&video_path).unwrap();
+        let file_size = file.metadata().unwrap().len();
+
+        for request in server.incoming_requests() {
+            // Handle OPTIONS preflight request
+            if request.method() == &tiny_http::Method::Options {
+                let mut response = Response::empty(204);
+                response.add_header(
+                    tiny_http::Header::from_bytes(
+                        &b"Access-Control-Allow-Origin"[..],
+                        &b"http://localhost:1420"[..],
+                    ).unwrap(),
+                );
+                response.add_header(
+                    tiny_http::Header::from_bytes(
+                        &b"Access-Control-Allow-Methods"[..],
+                        &b"GET, OPTIONS"[..],
+                    ).unwrap(),
+                );
+                let _ = request.respond(response);
+                continue;
+            }
+
+            // Handle range request
+            let mut start = 0;
+            let mut end = file_size - 1;
+            
+            if let Some(range_header) = request.headers().iter().find(|h| h.field.as_str() == "Range") {
+                if let Ok(range_str) = std::str::from_utf8(range_header.value.as_bytes()) {
+                    if let Some(range) = range_str.strip_prefix("bytes=") {
+                        let parts: Vec<&str> = range.split('-').collect();
+                        if parts.len() == 2 {
+                            start = parts[0].parse::<u64>().unwrap_or(0);
+                            end = parts[1].parse::<u64>().unwrap_or(file_size - 1);
+                        }
+                    }
+                }
+            }
+
+            let mut file = file.try_clone().unwrap();
+            file.seek(std::io::SeekFrom::Start(start)).unwrap();
+            let mut response = Response::new(
+                if start == 0 { StatusCode(200) } else { StatusCode(206) },
+                vec![],
+                Box::new(file.take(end - start + 1)),
+                Some((end - start + 1) as usize),
+                None
+            );
+
+            // Add headers...
+            if start != 0 {
+                response.add_header(
+                    tiny_http::Header::from_bytes(
+                        &b"Content-Range"[..],
+                        format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
+                    ).unwrap(),
+                );
+            }
+
+            // Add CORS and content type headers
+            response.add_header(
+                tiny_http::Header::from_bytes(
+                    &b"Access-Control-Allow-Origin"[..],
+                    &b"http://localhost:1420"[..],
+                ).unwrap(),
+            );
+            response.add_header(
+                tiny_http::Header::from_bytes(
+                    &b"Content-Type"[..],
+                    &b"video/mp4"[..],
+                ).unwrap(),
+            );
+
+            let _ = request.respond(response);
+        }
+    });
+
+    Ok(port)
+}
+
+// Modify stop_recording
 #[tauri::command]
-async fn stop_recording(_: tauri::AppHandle) -> Result<(usize, Vec<MousePosition>), String> {
+async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePosition>), String> {
     println!("Starting recording stop process...");
 
     if !RECORDING.load(Ordering::SeqCst) || !ENCODER_ACTIVE.load(Ordering::SeqCst) {
+        cleanup_resources();
         return Err("Not recording".to_string());
     }
 
@@ -484,6 +617,8 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(usize, Vec<MousePosition
         thread::sleep(std::time::Duration::from_millis(100));
         if start.elapsed().as_secs() > 5 {
             ENCODER_ACTIVE.store(false, Ordering::SeqCst);
+            RECORDING.store(false, Ordering::SeqCst);
+            cleanup_resources();
             return Err("Timeout waiting for encoder to finish".to_string());
         }
     }
@@ -492,6 +627,11 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(usize, Vec<MousePosition
     SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
     IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
 
+    // Initialize the memory map
+    if let Err(e) = init_video_mmap() {
+        return Err(format!("Failed to initialize video file: {}", e));
+    }
+
     // Collect mouse positions
     let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
         positions.drain(..).collect()
@@ -499,15 +639,13 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(usize, Vec<MousePosition
         Vec::new()
     };
 
-    // Get file size instead of reading the file
+    // Instead of returning chunk count, return video URL
     unsafe {
         if let Some(path) = &VIDEO_PATH {
-            match fs::metadata(path) {
-                Ok(metadata) => {
-                    let total_chunks = (metadata.len() as usize + CHUNK_SIZE - 1) / CHUNK_SIZE;
-                    Ok((total_chunks, mouse_positions))
-                },
-                Err(e) => Err(format!("Failed to get video metadata: {}", e))
+            if let Ok(port) = start_video_server(path.clone()) {
+                Ok((format!("http://localhost:{}", port), mouse_positions))
+            } else {
+                Err("Failed to start video server".to_string())
             }
         } else {
             Err("No video path available".to_string())

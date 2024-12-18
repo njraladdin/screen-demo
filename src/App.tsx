@@ -264,22 +264,11 @@ function App() {
       setIsLoadingVideo(true);
       setIsVideoReady(false);
 
-      const [numChunks, mouseData] = await invoke<[number, MousePosition[]]>("stop_recording");
+      const [videoUrl, mouseData] = await invoke<[string, MousePosition[]]>("stop_recording");
       setMousePositions(mouseData);
 
-      const chunks: Uint8Array[] = [];
-      
-      for (let i = 0; i < numChunks; i++) {
-        const base64Chunk = await invoke<string>("get_video_chunk", { chunkIndex: i });
-        const binaryChunk = Uint8Array.from(atob(base64Chunk), c => c.charCodeAt(0));
-        chunks.push(binaryChunk);
-        
-        setLoadingProgress(Math.round(((i + 1) / numChunks) * 100));
-      }
-
-      const fullVideo = new Blob(chunks, { type: "video/mp4" });
-      const url = URL.createObjectURL(fullVideo);
-      setCurrentVideo(url);
+      // Video is now served directly from local HTTP server
+      setCurrentVideo(videoUrl);
 
       if (videoRef.current) {
         const video = videoRef.current;
@@ -290,17 +279,16 @@ function App() {
         };
 
         video.addEventListener('loadeddata', loadFirstFrame);
-        videoControllerRef.current?.handleVideoSourceChange(url);
-        video.src = url;
+        videoControllerRef.current?.handleVideoSourceChange(videoUrl);
+        video.src = videoUrl;
         video.load();
       }
 
     } catch (err) {
-      console.error("Failed to stop recording:", err);
+      console.error("❌ Failed to stop recording:", err);
       setError(err as string);
     } finally {
       setIsLoadingVideo(false);
-      setLoadingProgress(0);
     }
   }
 

@@ -1,0 +1,117 @@
+Video Processing Optimization
+===========================
+
+Problem
+-------
+Initial implementation used chunk-by-chunk sequential transfer of video data from Rust to frontend:
+- Each chunk required separate IPC call
+- Base64 encoding/decoding overhead for each chunk
+- Sequential processing created bottleneck
+- ~4-5 seconds delay for 60MB video
+- Memory pressure from accumulating all chunks in memory
+
+Root Cause
+----------
+Original approach had multiple inefficiencies:
+1. File was opened/closed for each chunk
+2. Sequential chunk processing
+3. Multiple IPC calls
+4. Unnecessary data transformations
+5. Memory mapping conflicts between recordings
+
+Initial Solution Attempt
+-----------------------
+Tried parallel chunk loading with memory mapping:
+
+const chunks: (Uint8Array | null)[] = new Array(numChunks).fill(null);
+const chunkPromises = Array.from({ length: numChunks }, async (_, index) => {
+    const base64Chunk = await invoke<string>("get_video_chunk", { chunkIndex: index });
+    chunks[index] = Uint8Array.from(atob(base64Chunk), c => c.charCodeAt(0));
+});
+await Promise.all(chunkPromises);
+
+Result: Still inefficient due to:
+- Multiple IPC calls still required
+- Base64 encoding/decoding overhead remained
+- Memory mapping conflicts between recordings
+- Memory pressure from holding all chunks
+
+Final Solution
+-------------
+Implemented local HTTP server with native video streaming:
+
+1. Start local HTTP server in Rust when recording stops
+2. Stream video directly to browser using proper HTTP range requests
+3. Handle CORS and content-type headers correctly
+4. Clean up resources between recordings
+5. Use browser's native video streaming capabilities
+
+Implementation Details:
+- Server starts on dynamic port (8000-9000)
+- Proper handling of HTTP range requests for seeking
+- Content-Type: video/mp4 header
+- CORS headers for localhost access
+- Automatic resource cleanup
+- Single file handle for entire playback
+- Zero-copy file access where possible
+
+Code Structure:
+- start_video_server(): Starts HTTP server, returns port
+- cleanup_resources(): Ensures proper cleanup between recordings
+- Handle OPTIONS requests for CORS
+- Handle GET requests with range support
+- Proper error handling and resource management
+
+Why It Works
+-----------
+1. Leverages browser's native video streaming:
+   - Efficient buffering
+   - Native seeking support
+   - Memory management handled by browser
+
+2. Eliminates multiple overheads:
+   - No base64 encoding/decoding
+   - No chunk management
+   - No memory accumulation
+   - No multiple IPC calls
+
+3. Better resource management:
+   - Single file handle
+   - Automatic cleanup
+   - No memory mapping conflicts
+   - Proper CORS handling
+
+Performance Improvement
+---------------------
+Before:
+- 4-5 seconds delay for 60MB video
+- High memory usage
+- Stuttering during playback
+- Resource conflicts between recordings
+
+After:
+- Almost immediate playback
+- Minimal memory overhead
+- Smooth seeking
+- No resource conflicts
+- Native video controls work properly
+
+Files Changed
+------------
+src-tauri/src/lib.rs:
+- Added HTTP server implementation
+- Added resource cleanup
+- Modified video handling logic
+
+src/App.tsx:
+- Removed chunk handling code
+- Updated to use video URL directly
+- Simplified video loading logic
+
+Lessons Learned
+--------------
+1. Native browser capabilities often outperform custom implementations
+2. Reducing data transformations is crucial for performance
+3. Proper resource cleanup is essential for reliability
+4. HTTP streaming is more efficient than manual chunk transfer
+5. Browser's video implementation handles many edge cases automatically
