@@ -41,6 +41,7 @@ static ENCODING_FINISHED: AtomicBool = AtomicBool::new(false);
 static ENCODER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static VIDEO_MMAP: ParkingMutex<Option<Arc<Mmap>>> = ParkingMutex::new(None);
 static PORT: AtomicU16 = AtomicU16::new(0);
+static SERVER_PORTS: Mutex<Vec<u16>> = Mutex::new(Vec::new());
 
 // Add these new structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,24 +347,17 @@ async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
 fn cleanup_resources() {
     println!("Cleaning up resources...");
     
+    // Clean up any running servers
+    if let Ok(mut ports) = SERVER_PORTS.lock() {
+        ports.clear();
+    }
+    
     // First, drop the memory map
     {
         let mut mmap = VIDEO_MMAP.lock();
         *mmap = None;
     }
     
-    // Then clean up video path and file
-    unsafe {
-        if let Some(path) = &VIDEO_PATH {
-            // Try to remove the temporary file
-            match std::fs::remove_file(path) {
-                Ok(_) => println!("Successfully removed temp file: {}", path),
-                Err(e) => println!("Failed to remove temp file: {}", e),
-            }
-            VIDEO_PATH = None;
-        }
-    }
-
     // Reset all state flags
     RECORDING.store(false, Ordering::SeqCst);
     SHOULD_STOP.store(false, Ordering::SeqCst);
@@ -508,45 +502,80 @@ fn init_video_mmap() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Add this function at the top to handle CORS headers
+fn add_cors_headers<R: std::io::Read>(response: &mut Response<R>) {
+    response.add_header(
+        tiny_http::Header::from_bytes(
+            &b"Access-Control-Allow-Origin"[..],
+            &b"http://tauri.localhost"[..],
+        ).unwrap(),
+    );
+    response.add_header(
+        tiny_http::Header::from_bytes(
+            &b"Access-Control-Allow-Methods"[..],
+            &b"GET, OPTIONS"[..],
+        ).unwrap(),
+    );
+}
+
+// Modify start_video_server to track ports
 fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Error>> {
+    println!("Starting video server for: {}", video_path);
+    
+    // Clean up old ports first
+    if let Ok(mut ports) = SERVER_PORTS.lock() {
+        ports.clear();
+    }
+    
     // Try ports starting from 8000
     let mut port = 8000;
     let server = loop {
-        if let Ok(server) = Server::http(format!("127.0.0.1:{}", port)) {
-            break server;
-        }
-        port += 1;
-        if port > 9000 {
-            return Err("No available ports".into());
+        match Server::http(format!("127.0.0.1:{}", port)) {
+            Ok(server) => {
+                println!("Server started on port {}", port);
+                if let Ok(mut ports) = SERVER_PORTS.lock() {
+                    ports.push(port);
+                }
+                break server;
+            },
+            Err(e) => {
+                println!("Failed to bind port {}: {}", port, e);
+                port += 1;
+                if port > 9000 {
+                    return Err("No available ports".into());
+                }
+            }
         }
     };
     
     PORT.store(port, Ordering::SeqCst);
     
     thread::spawn(move || {
-        let file = File::open(&video_path).unwrap();
-        let file_size = file.metadata().unwrap().len();
+        println!("Opening video file...");
+        let file = File::open(&video_path).map_err(|e| {
+            println!("Failed to open video file: {}", e);
+            e
+        }).unwrap();
+        
+        println!("Getting file metadata...");
+        let file_size = file.metadata().map_err(|e| {
+            println!("Failed to get file metadata: {}", e);
+            e
+        }).unwrap().len();
+        println!("File size: {} bytes", file_size);
 
         for request in server.incoming_requests() {
+            println!("Received request");
             // Handle OPTIONS preflight request
             if request.method() == &tiny_http::Method::Options {
+                println!("Handling OPTIONS request");
                 let mut response = Response::empty(204);
-                response.add_header(
-                    tiny_http::Header::from_bytes(
-                        &b"Access-Control-Allow-Origin"[..],
-                        &b"http://localhost:1420"[..],
-                    ).unwrap(),
-                );
-                response.add_header(
-                    tiny_http::Header::from_bytes(
-                        &b"Access-Control-Allow-Methods"[..],
-                        &b"GET, OPTIONS"[..],
-                    ).unwrap(),
-                );
+                add_cors_headers(&mut response);  // Use the new function
                 let _ = request.respond(response);
                 continue;
             }
 
+            println!("Handling {} request", request.method());
             // Handle range request
             let mut start = 0;
             let mut end = file_size - 1;
@@ -573,6 +602,16 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
                 None
             );
 
+            add_cors_headers(&mut response);  // Use the new function
+            
+            // Add content type header
+            response.add_header(
+                tiny_http::Header::from_bytes(
+                    &b"Content-Type"[..],
+                    &b"video/mp4"[..],
+                ).unwrap(),
+            );
+
             // Add headers...
             if start != 0 {
                 response.add_header(
@@ -583,28 +622,16 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
                 );
             }
 
-            // Add CORS and content type headers
-            response.add_header(
-                tiny_http::Header::from_bytes(
-                    &b"Access-Control-Allow-Origin"[..],
-                    &b"http://localhost:1420"[..],
-                ).unwrap(),
-            );
-            response.add_header(
-                tiny_http::Header::from_bytes(
-                    &b"Content-Type"[..],
-                    &b"video/mp4"[..],
-                ).unwrap(),
-            );
-
             let _ = request.respond(response);
+            println!("Response sent");
         }
+        println!("Server thread ended");
     });
 
     Ok(port)
 }
 
-// Modify stop_recording
+// 2. Modify stop_recording to use this
 #[tauri::command]
 async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePosition>), String> {
     println!("Starting recording stop process...");
@@ -633,7 +660,7 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
     SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
     IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
 
-    // Get the video path before initializing mmap
+    // Get the video path
     let video_path = unsafe {
         if let Some(path) = &VIDEO_PATH {
             path.clone()
@@ -643,19 +670,19 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
         }
     };
 
-    // Start the video server
+    // Start the video server with the temp file
     match start_video_server(video_path) {
         Ok(port) => {
-            // Collect mouse positions
+            println!("Server started successfully on port {}", port);
             let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
                 positions.drain(..).collect()
             } else {
                 Vec::new()
             };
-
             Ok((format!("http://localhost:{}", port), mouse_positions))
         },
         Err(e) => {
+            println!("Server failed to start: {}", e);
             cleanup_resources();
             Err(format!("Failed to start video server: {}", e))
         }
