@@ -344,17 +344,33 @@ async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
 
 // Add this function to clean up resources
 fn cleanup_resources() {
-    // Drop the memory map
-    *VIDEO_MMAP.lock() = None;
+    println!("Cleaning up resources...");
     
-    // Clean up video path
+    // First, drop the memory map
+    {
+        let mut mmap = VIDEO_MMAP.lock();
+        *mmap = None;
+    }
+    
+    // Then clean up video path and file
     unsafe {
         if let Some(path) = &VIDEO_PATH {
             // Try to remove the temporary file
-            let _ = std::fs::remove_file(path);
+            match std::fs::remove_file(path) {
+                Ok(_) => println!("Successfully removed temp file: {}", path),
+                Err(e) => println!("Failed to remove temp file: {}", e),
+            }
             VIDEO_PATH = None;
         }
     }
+
+    // Reset all state flags
+    RECORDING.store(false, Ordering::SeqCst);
+    SHOULD_STOP.store(false, Ordering::SeqCst);
+    ENCODING_FINISHED.store(false, Ordering::SeqCst);
+    ENCODER_ACTIVE.store(false, Ordering::SeqCst);
+    
+    println!("Resource cleanup completed");
 }
 
 // Modify start_recording
@@ -362,26 +378,17 @@ fn cleanup_resources() {
 async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
     println!("Starting recording with monitor_id: {:?}", monitor_id);
 
+    // First, ensure any previous recording is fully cleaned up
     if RECORDING.load(Ordering::SeqCst) {
-        if !ENCODER_ACTIVE.load(Ordering::SeqCst) {
-            println!("Detected stale recording state, resetting...");
-            RECORDING.store(false, Ordering::SeqCst);
-            SHOULD_STOP.store(false, Ordering::SeqCst);
-            ENCODING_FINISHED.store(false, Ordering::SeqCst);
-            cleanup_resources();
-        } else {
-            println!("Already recording, returning error");
-            return Err("Already recording".to_string());
-        }
+        println!("Detected active recording, cleaning up first...");
+        SHOULD_STOP.store(true, Ordering::SeqCst);
+        
+        // Wait a bit for cleanup
+        thread::sleep(std::time::Duration::from_millis(500));
     }
 
-    // Clean up any existing resources before starting new recording
+    // Force cleanup regardless of previous state
     cleanup_resources();
-
-    // Reset all states
-    SHOULD_STOP.store(false, Ordering::SeqCst);
-    ENCODING_FINISHED.store(false, Ordering::SeqCst);
-    ENCODER_ACTIVE.store(false, Ordering::SeqCst);
 
     // Clear previous mouse positions
     if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
@@ -602,22 +609,21 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
 async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePosition>), String> {
     println!("Starting recording stop process...");
 
-    if !RECORDING.load(Ordering::SeqCst) || !ENCODER_ACTIVE.load(Ordering::SeqCst) {
+    if !RECORDING.load(Ordering::SeqCst) {
+        println!("Not recording, cleaning up any stale resources...");
         cleanup_resources();
         return Err("Not recording".to_string());
     }
 
     // Signal capture to stop
     SHOULD_STOP.store(true, Ordering::SeqCst);
-    RECORDING.store(false, Ordering::SeqCst);
-
+    
     // Wait for encoder to finish with timeout
     let start = Instant::now();
     while !ENCODING_FINISHED.load(Ordering::SeqCst) {
         thread::sleep(std::time::Duration::from_millis(100));
         if start.elapsed().as_secs() > 5 {
-            ENCODER_ACTIVE.store(false, Ordering::SeqCst);
-            RECORDING.store(false, Ordering::SeqCst);
+            println!("Timeout waiting for encoder, forcing cleanup...");
             cleanup_resources();
             return Err("Timeout waiting for encoder to finish".to_string());
         }
@@ -627,28 +633,31 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
     SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
     IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
 
-    // Initialize the memory map
-    if let Err(e) = init_video_mmap() {
-        return Err(format!("Failed to initialize video file: {}", e));
-    }
-
-    // Collect mouse positions
-    let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
-        positions.drain(..).collect()
-    } else {
-        Vec::new()
+    // Get the video path before initializing mmap
+    let video_path = unsafe {
+        if let Some(path) = &VIDEO_PATH {
+            path.clone()
+        } else {
+            cleanup_resources();
+            return Err("No video path available".to_string());
+        }
     };
 
-    // Instead of returning chunk count, return video URL
-    unsafe {
-        if let Some(path) = &VIDEO_PATH {
-            if let Ok(port) = start_video_server(path.clone()) {
-                Ok((format!("http://localhost:{}", port), mouse_positions))
+    // Start the video server
+    match start_video_server(video_path) {
+        Ok(port) => {
+            // Collect mouse positions
+            let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
+                positions.drain(..).collect()
             } else {
-                Err("Failed to start video server".to_string())
-            }
-        } else {
-            Err("No video path available".to_string())
+                Vec::new()
+            };
+
+            Ok((format!("http://localhost:{}", port), mouse_positions))
+        },
+        Err(e) => {
+            cleanup_resources();
+            Err(format!("Failed to start video server: {}", e))
         }
     }
 }
