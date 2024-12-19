@@ -139,8 +139,12 @@ export class VideoController {
   };
 
   private handleSeeked = () => {
-    console.log('Video seeked');
+    console.log('[VideoController] Seeked event fired', {
+      currentTime: this.video.currentTime,
+      readyState: this.video.readyState
+    });
     this.setSeeking(false);
+    this.setCurrentTime(this.video.currentTime);
     this.renderFrame();
   };
 
@@ -230,6 +234,7 @@ export class VideoController {
   }
 
   public seek(time: number) {
+    console.log('[VideoController] Seeking to:', time);
     this.setSeeking(true);
     this.video.currentTime = time;
   }
@@ -264,23 +269,41 @@ export class VideoController {
   public handleVideoSourceChange = (videoUrl: string) => {
     if (!this.video || !this.canvas) return;
     
-    // Actually use the videoUrl
-    this.video.src = videoUrl;
+    // Reset states
+    this.setReady(false);
+    this.setSeeking(false);
+    this.setPlaying(false);
     
-    const handleMetadata = () => {
+    // Reset video element
+    this.video.pause();
+    this.video.removeAttribute('src');
+    this.video.load();
+    
+    return new Promise<void>((resolve) => {
+      const handleCanPlayThrough = () => {
+        console.log('[VideoController] Video can play through');
+        this.video.removeEventListener('canplaythrough', handleCanPlayThrough);
+        
+        // Set up canvas
         this.canvas.width = this.video.videoWidth;
         this.canvas.height = this.video.videoHeight;
         
         const ctx = this.canvas.getContext('2d');
         if (ctx) {
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = 'high';
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
         }
         
-        this.video.removeEventListener('loadedmetadata', handleMetadata);
-    };
+        this.setReady(true);
+        resolve();
+      };
 
-    this.video.addEventListener('loadedmetadata', handleMetadata);
+      // Set up video
+      this.video.addEventListener('canplaythrough', handleCanPlayThrough);
+      this.video.preload = 'auto';
+      this.video.src = videoUrl;
+      this.video.load(); // Explicitly load the video
+    });
   };
 }
 

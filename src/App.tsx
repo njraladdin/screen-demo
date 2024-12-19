@@ -253,7 +253,7 @@ function App() {
     }
   }
 
-  // Replace handleStopRecording with this version
+  // Update handleStopRecording
   async function handleStopRecording() {
     if (!isRecording) return;
 
@@ -261,51 +261,78 @@ function App() {
       setIsRecording(false);
       setIsLoadingVideo(true);
       setIsVideoReady(false);
-      setLoadingProgress(0); // Reset progress
+      setLoadingProgress(0);
 
       const [videoUrl, mouseData] = await invoke<[string, MousePosition[]]>("stop_recording");
       setMousePositions(mouseData);
-      setLoadingProgress(50); // Update progress after getting data
+      setLoadingProgress(25);
 
-      // Video is now served directly from local HTTP server
-      setCurrentVideo(videoUrl);
+      // Fetch the video data first
+      console.log('[App] Fetching video data from:', videoUrl);
+      const response = await fetch(videoUrl);
+      if (!response.ok) throw new Error('Failed to fetch video');
+      
+      // Show download progress
+      const reader = response.body!.getReader();
+      const contentLength = +(response.headers.get('Content-Length') ?? 0);
+      let receivedLength = 0;
+      const chunks = [];
+
+      while(true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        
+        chunks.push(value);
+        receivedLength += value.length;
+        const progress = (receivedLength / contentLength) * 75;
+        setLoadingProgress(25 + progress); // 25-100%
+      }
+
+      // Combine all chunks into a single Uint8Array
+      const videoData = new Uint8Array(receivedLength);
+      let position = 0;
+      for(const chunk of chunks) {
+        videoData.set(chunk, position);
+        position += chunk.length;
+      }
+
+      // Create blob and object URL
+      const blob = new Blob([videoData], { type: 'video/mp4' });
+      const objectUrl = URL.createObjectURL(blob);
+      setCurrentVideo(objectUrl);
 
       if (videoRef.current) {
         const video = videoRef.current;
         
-        // Add progress event listener
-        const handleProgress = () => {
-          if (video.buffered.length > 0) {
-            const bufferedEnd = video.buffered.end(0);
-            const duration = video.duration;
-            const progress = Math.round((bufferedEnd / duration) * 100);
-            setLoadingProgress(50 + progress / 2); // Scale from 50-100%
-          }
-        };
-
-        const loadFirstFrame = () => {
-          video.currentTime = 0;
-          renderFrame();
-          video.removeEventListener('loadeddata', loadFirstFrame);
-          video.removeEventListener('progress', handleProgress);
+        // Wait for video to be fully loaded
+        const handleCanPlayThrough = () => {
+          console.log('[App] Video can play through');
+          video.removeEventListener('canplaythrough', handleCanPlayThrough);
+          setIsVideoReady(true);
+          setIsLoadingVideo(false);
           setLoadingProgress(100);
         };
 
-        video.addEventListener('progress', handleProgress);
-        video.addEventListener('loadeddata', loadFirstFrame);
-        videoControllerRef.current?.handleVideoSourceChange(videoUrl);
-        video.src = videoUrl;
-        video.load();
+        video.addEventListener('canplaythrough', handleCanPlayThrough);
+        videoControllerRef.current?.handleVideoSourceChange(objectUrl);
       }
 
     } catch (err) {
       console.error("❌ Failed to stop recording:", err);
       setError(err as string);
-    } finally {
       setIsLoadingVideo(false);
-      setLoadingProgress(0); // Reset progress
+      setLoadingProgress(0);
     }
   }
+
+  // Add cleanup for object URL
+  useEffect(() => {
+    return () => {
+      if (currentVideo && currentVideo.startsWith('blob:')) {
+        URL.revokeObjectURL(currentVideo);
+      }
+    };
+  }, [currentVideo]);
 
   // Initialize segment when video loads
   useEffect(() => {
@@ -403,11 +430,21 @@ function App() {
     const percent = x / rect.width;
     const newTime = percent * duration;
 
+    console.log('[Timeline] Click seek:', {
+      percent,
+      newTime,
+      currentTime: video.currentTime,
+      duration
+    });
+
     if (newTime >= segment.trimStart && newTime <= segment.trimEnd) {
-      video.currentTime = newTime;
-      setCurrentTime(newTime);
-      // Don't automatically set editing state when clicking timeline
-      setEditingKeyframeId(null);
+      // Use the video controller instead of directly setting currentTime
+      videoControllerRef.current?.seek(newTime);
+      
+      // Add a small delay before setting current time in state
+      requestAnimationFrame(() => {
+        setCurrentTime(newTime);
+      });
     }
   };
 
@@ -1207,4 +1244,5 @@ function formatTime(seconds: number): string {
 }
 
 export default App;
+
 

@@ -1,0 +1,72 @@
+Video Seeking Issue
+==================
+
+Problem
+-------
+Video seeking (clicking timeline) was unreliable - playhead would reset to 0 and video would show first frame instead of seeking to clicked position.
+
+Root Cause
+----------
+1. Streaming implementation causing seeking issues:
+   - Video data being streamed from local HTTP server
+   - Browser unable to reliably seek within streaming video
+   - Each seek attempt resulting in buffer reset to start
+
+2. Complex seek verification adding overhead:
+   - Attempt to verify seek success
+   - Retry logic on failed seeks
+   - Timeout handling
+   - All adding complexity without solving root cause
+
+Fix
+---
+1. Load entire video upfront instead of streaming:
+   ```typescript
+   // Fetch entire video file
+   const response = await fetch(videoUrl);
+   const reader = response.body!.getReader();
+   const chunks = [];
+   
+   // Read all chunks
+   while(true) {
+     const {done, value} = await reader.read();
+     if (done) break;
+     chunks.push(value);
+   }
+   
+   // Create blob URL for reliable playback
+   const blob = new Blob([chunks], { type: 'video/mp4' });
+   const objectUrl = URL.createObjectURL(blob);
+   ```
+
+2. Simplified seeking logic:
+   ```typescript
+   public seek(time: number) {
+     this.setSeeking(true);
+     this.video.currentTime = time;
+   }
+   ```
+
+3. Removed unnecessary complexity:
+   - Deleted seek verification
+   - Removed retry logic
+   - Eliminated timeout handling
+   - No more streaming-related workarounds
+
+Verification
+-----------
+- Seeking works instantly and reliably
+- Video shows correct frame at seek position
+- Playhead updates correctly
+- No more resets to start position
+- Smoother overall seeking experience
+
+Files Changed
+------------
+src/App.tsx
+src/lib/videoController.ts
+src-tauri/src/lib.rs
+
+Key Insight
+----------
+The issue wasn't with the seeking mechanism itself but with how the video data was being delivered. Loading the complete video file into memory before playback ensures the browser has full random access to all frames, making seeking reliable. 
