@@ -87,6 +87,16 @@ export class VideoRenderer {
     const { video, canvas, tempCanvas, segment, backgroundConfig, mousePositions } = context;
     if (!video || !canvas || !segment) return;
 
+    // Store original canvas dimensions
+    const targetWidth = canvas.width;
+    const targetHeight = canvas.height;
+
+    // Temporarily set canvas to video dimensions for consistent rendering
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    tempCanvas.width = video.videoWidth;
+    tempCanvas.height = video.videoHeight;
+
     const isExportMode = options.exportMode || false;
     const quality = isExportMode ? 'high' : 'medium';
     
@@ -185,7 +195,7 @@ export class VideoRenderer {
         const cursorStart = performance.now();
         const interpolatedPosition = this.interpolateCursorPosition(video.currentTime, mousePositions, backgroundConfig);
         if (interpolatedPosition) {
-            // Calculate base cursor position relative to original video
+            // Calculate cursor position in original video space first
             let cursorX = x + (interpolatedPosition.x * scaledWidth / video.videoWidth);
             let cursorY = y + (interpolatedPosition.y * scaledHeight / video.videoHeight);
 
@@ -196,12 +206,13 @@ export class VideoRenderer {
                 const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
                 const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
 
-                // Apply same zoom transform to cursor position
                 cursorX = (cursorX - x) * zoomState.zoomFactor + x + zoomOffsetX;
                 cursorY = (cursorY - y) * zoomState.zoomFactor + y + zoomOffsetY;
             }
 
-            const cursorScale = (backgroundConfig.cursorScale || 2) * (zoomState?.zoomFactor || 1);
+            // Scale cursor size based on video dimensions ratio
+            const sizeRatio = Math.min(targetWidth / video.videoWidth, targetHeight / video.videoHeight);
+            const cursorScale = (backgroundConfig.cursorScale || 2) * sizeRatio * (zoomState?.zoomFactor || 1);
 
             this.drawMouseCursor(
                 ctx,
@@ -226,6 +237,51 @@ export class VideoRenderer {
     } finally {
         this.isDrawing = false;
         ctx.restore();
+
+        // If we're exporting and dimensions are different
+        if (options.exportMode && (targetWidth !== video.videoWidth || targetHeight !== video.videoHeight)) {
+            // Create a temporary canvas for scaling
+            const exportCanvas = document.createElement('canvas');
+            exportCanvas.width = targetWidth;
+            exportCanvas.height = targetHeight;
+            const exportCtx = exportCanvas.getContext('2d', {
+                alpha: false,
+                willReadFrequently: false
+            });
+            
+            if (exportCtx) {
+                // Use better quality settings for export
+                exportCtx.imageSmoothingEnabled = true;
+                exportCtx.imageSmoothingQuality = 'high';
+                
+                exportCtx.drawImage(canvas, 0, 0, targetWidth, targetHeight);
+                // Copy scaled content back to main canvas
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+                ctx?.drawImage(exportCanvas, 0, 0);
+                exportCanvas.remove(); // Clean up
+            }
+        } else if (!options.exportMode) {
+            // For preview, restore original canvas size with proper scaling
+            const previewCanvas = document.createElement('canvas');
+            previewCanvas.width = targetWidth;
+            previewCanvas.height = targetHeight;
+            const previewCtx = previewCanvas.getContext('2d', {
+                alpha: false,
+                willReadFrequently: false
+            });
+            
+            if (previewCtx) {
+                previewCtx.imageSmoothingEnabled = true;
+                previewCtx.imageSmoothingQuality = 'high';
+                previewCtx.drawImage(canvas, 0, 0, targetWidth, targetHeight);
+                
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+                ctx?.drawImage(previewCanvas, 0, 0);
+                previewCanvas.remove(); // Clean up
+            }
+        }
     }
   };
 

@@ -502,12 +502,19 @@ fn init_video_mmap() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Add this function at the top to handle CORS headers
+// Modify the CORS headers function to handle both dev and prod environments
 fn add_cors_headers<R: std::io::Read>(response: &mut Response<R>) {
+    // Check if we're in development by trying to access localhost:1420
+    let origin = if cfg!(debug_assertions) {
+        "http://localhost:1420"
+    } else {
+        "http://tauri.localhost"
+    };
+
     response.add_header(
         tiny_http::Header::from_bytes(
             &b"Access-Control-Allow-Origin"[..],
-            &b"http://tauri.localhost"[..],
+            origin.as_bytes(),
         ).unwrap(),
     );
     response.add_header(
