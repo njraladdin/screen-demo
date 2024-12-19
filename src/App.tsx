@@ -284,7 +284,7 @@ function App() {
         
         chunks.push(value);
         receivedLength += value.length;
-        const progress = (receivedLength / contentLength) * 75;
+        const progress = Math.min(((receivedLength / contentLength) * 75), 75);
         setLoadingProgress(25 + progress); // 25-100%
       }
 
@@ -714,7 +714,9 @@ function App() {
         )}
         {isLoadingVideo && loadingProgress > 0 && (
           <div className="mt-2">
-            <p className="text-[#818384] text-sm">Loading video: {loadingProgress}%</p>
+            <p className="text-[#818384] text-sm">
+              Loading video: {Math.min(Math.round(loadingProgress), 100)}%
+            </p>
           </div>
         )}
       </div>
