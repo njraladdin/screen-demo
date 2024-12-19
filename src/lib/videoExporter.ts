@@ -1,31 +1,98 @@
 import { videoRenderer } from './videoRenderer';
-import type { VideoSegment, BackgroundConfig, MousePosition } from '@/types/video';
+import type { 
+  ExportOptions, 
+  ExportQuality, 
+  DimensionPreset, 
+  VideoSegment, 
+  BackgroundConfig, 
+  MousePosition 
+} from '@/types/video';
 
-interface ExportOptions {
-  video: HTMLVideoElement;
-  canvas: HTMLCanvasElement;
-  tempCanvas: HTMLCanvasElement;
-  segment: VideoSegment;
-  backgroundConfig: BackgroundConfig;
-  mousePositions: MousePosition[];
-  onProgress?: (progress: number) => void;
-  format?: 'webm' | 'mp4';
+interface QualityPreset {
+  bitrate: number;
+  label: string;
 }
+
+interface OriginalDimensionPreset {
+  type: 'original';
+  label: string;
+}
+
+interface FixedDimensionPreset {
+  type: 'fixed';
+  width: number;
+  height: number;
+  label: string;
+}
+
+type DimensionPresetConfig = OriginalDimensionPreset | FixedDimensionPreset;
+
+export const EXPORT_PRESETS: Record<ExportQuality, QualityPreset> = {
+  original: {
+    bitrate: 50000000,
+    label: 'Original Quality'
+  },
+  high: {
+    bitrate: 8000000,
+    label: 'High Quality'
+  },
+  medium: {
+    bitrate: 4000000,
+    label: 'Medium Quality'
+  },
+  small: {
+    bitrate: 2000000,
+    label: 'Small Size'
+  }
+} as const;
+
+export const DIMENSION_PRESETS: Record<DimensionPreset, DimensionPresetConfig> = {
+  original: { 
+    type: 'original',
+    label: 'Original Size' 
+  },
+  '1080p': { 
+    type: 'fixed',
+    width: 1920, 
+    height: 1080, 
+    label: '1080p' 
+  },
+  '720p': { 
+    type: 'fixed',
+    width: 1280, 
+    height: 720, 
+    label: '720p' 
+  },
+  '480p': { 
+    type: 'fixed',
+    width: 854, 
+    height: 480, 
+    label: '480p' 
+  }
+} as const;
 
 export class VideoExporter {
   private isExporting = false;
   private lastProgress = 0;
 
-  private setupMediaRecorder(stream: MediaStream): MediaRecorder {
+  private setupMediaRecorder(stream: MediaStream, quality: ExportQuality): MediaRecorder {
     const options = {
-      videoBitsPerSecond: 50000000, // Increase to 50 Mbps
-      mimeType: 'video/webm;codecs=vp9' // Force VP9 for better quality
+      videoBitsPerSecond: EXPORT_PRESETS[quality].bitrate,
+      mimeType: 'video/webm;codecs=vp9'
     };
 
     return new MediaRecorder(stream, options);
   }
 
-  async exportVideo(options: ExportOptions): Promise<Blob> {
+  async exportVideo(options: ExportOptions & {
+    video: HTMLVideoElement;
+    canvas: HTMLCanvasElement;
+    tempCanvas: HTMLCanvasElement;
+    segment: VideoSegment;
+    backgroundConfig: BackgroundConfig;
+    mousePositions: MousePosition[];
+    onProgress?: (progress: number) => void;
+  }): Promise<Blob> {
     if (this.isExporting) {
       return Promise.reject('Export already in progress');
     }
@@ -41,10 +108,30 @@ export class VideoExporter {
     // Use higher framerate for capture
     const stream = canvas.captureStream(60);
     
-    // Force high quality canvas settings
-    canvas.width = video.videoWidth;   // Match source resolution
-    canvas.height = video.videoHeight;
-    
+    // Calculate output dimensions
+    let outputWidth = video.videoWidth;
+    let outputHeight = video.videoHeight;
+
+    if (options.dimensions !== 'original') {
+      const preset = DIMENSION_PRESETS[options.dimensions];
+      if (preset.type === 'fixed') {
+        const aspectRatio = video.videoWidth / video.videoHeight;
+        
+        outputWidth = preset.width;
+        outputHeight = Math.round(preset.width / aspectRatio);
+        
+        // Ensure height doesn't exceed target
+        if (outputHeight > preset.height) {
+          outputHeight = preset.height;
+          outputWidth = Math.round(preset.height * aspectRatio);
+        }
+      }
+    }
+
+    // Set canvas size to output dimensions
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+
     const ctx = canvas.getContext('2d', {
       alpha: false,
       desynchronized: false,
@@ -59,7 +146,7 @@ export class VideoExporter {
       ctx.globalCompositeOperation = 'copy';  // Faster compositing
     }
 
-    const mediaRecorder = this.setupMediaRecorder(stream);
+    const mediaRecorder = this.setupMediaRecorder(stream, options.quality);
     const chunks: Blob[] = [];
     let recordingComplete = false;
 
@@ -162,8 +249,22 @@ export class VideoExporter {
   }
 
   async exportAndDownload(options: ExportOptions): Promise<void> {
+    // Validate required properties
+    if (!options.video || !options.canvas || !options.tempCanvas || 
+        !options.segment || !options.backgroundConfig || !options.mousePositions) {
+      throw new Error('Missing required export options');
+    }
+
     try {
-      const blob = await this.exportVideo(options);
+      const blob = await this.exportVideo({
+        ...options,
+        video: options.video,
+        canvas: options.canvas,
+        tempCanvas: options.tempCanvas,
+        segment: options.segment,
+        backgroundConfig: options.backgroundConfig,
+        mousePositions: options.mousePositions
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

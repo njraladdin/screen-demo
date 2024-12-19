@@ -4,8 +4,8 @@ import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2
 import "./App.css";
 import { Button } from "@/components/ui/button";
 import { videoRenderer } from '@/lib/videoRenderer';
-import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition } from '@/types/video';
-import { videoExporter } from '@/lib/videoExporter';
+import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition, ExportOptions } from '@/types/video';
+import { videoExporter, EXPORT_PRESETS, DIMENSION_PRESETS } from '@/lib/videoExporter';
 import { createVideoController } from '@/lib/videoController';
 import logo from '@/assets/logo.svg';
 
@@ -58,6 +58,7 @@ function App() {
   const [currentVideo, setCurrentVideo] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState(0);
   const [isLoadingVideo, setIsLoadingVideo] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -252,9 +253,6 @@ function App() {
     }
   }
 
-  // Add these state variables in App component
-  const [loadingProgress, setLoadingProgress] = useState(0);
-
   // Replace handleStopRecording with this version
   async function handleStopRecording() {
     if (!isRecording) return;
@@ -263,21 +261,37 @@ function App() {
       setIsRecording(false);
       setIsLoadingVideo(true);
       setIsVideoReady(false);
+      setLoadingProgress(0); // Reset progress
 
       const [videoUrl, mouseData] = await invoke<[string, MousePosition[]]>("stop_recording");
       setMousePositions(mouseData);
+      setLoadingProgress(50); // Update progress after getting data
 
       // Video is now served directly from local HTTP server
       setCurrentVideo(videoUrl);
 
       if (videoRef.current) {
         const video = videoRef.current;
+        
+        // Add progress event listener
+        const handleProgress = () => {
+          if (video.buffered.length > 0) {
+            const bufferedEnd = video.buffered.end(0);
+            const duration = video.duration;
+            const progress = Math.round((bufferedEnd / duration) * 100);
+            setLoadingProgress(50 + progress / 2); // Scale from 50-100%
+          }
+        };
+
         const loadFirstFrame = () => {
           video.currentTime = 0;
           renderFrame();
           video.removeEventListener('loadeddata', loadFirstFrame);
+          video.removeEventListener('progress', handleProgress);
+          setLoadingProgress(100);
         };
 
+        video.addEventListener('progress', handleProgress);
         video.addEventListener('loadeddata', loadFirstFrame);
         videoControllerRef.current?.handleVideoSourceChange(videoUrl);
         video.src = videoUrl;
@@ -289,6 +303,7 @@ function App() {
       setError(err as string);
     } finally {
       setIsLoadingVideo(false);
+      setLoadingProgress(0); // Reset progress
     }
   }
 
@@ -445,37 +460,37 @@ function App() {
 
   // Add new export function to replace video-exporter.ts
   const handleExport = async () => {
+    setShowExportDialog(true);
+  };
+
+  // Add new method to handle actual export
+  const startExport = async () => {
     if (!currentVideo || !segment || !videoRef.current || !canvasRef.current) return;
 
-    if (isProcessing) {
-      console.log('[App] Export already in progress, ignoring request');
-      return;
-    }
-
     try {
-      console.log('[App] Starting export process');
+      setShowExportDialog(false);
       setIsProcessing(true);
 
-      await videoExporter.exportAndDownload({
+      // Create a complete export options object
+      const exportConfig: ExportOptions = {
+        quality: exportOptions.quality,
+        dimensions: exportOptions.dimensions,
         video: videoRef.current,
         canvas: canvasRef.current,
         tempCanvas: tempCanvasRef.current,
         segment,
         backgroundConfig,
         mousePositions,
-        onProgress: (progress) => {
-          console.log(`[App] Export progress: ${progress.toFixed(1)}%`);
+        onProgress: (progress: number) => {
           setExportProgress(progress);
-        },
-        format: 'mp4'
-      });
+        }
+      };
 
-      console.log('[App] Export completed successfully');
+      await videoExporter.exportAndDownload(exportConfig);
 
     } catch (error) {
       console.error('[App] Export error:', error);
     } finally {
-      console.log('[App] Cleanup: Resetting states');
       setIsProcessing(false);
       setExportProgress(0);
     }
@@ -668,6 +683,13 @@ function App() {
       </div>
     );
   };
+
+  // Add new state for export options
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportOptions, setExportOptions] = useState<ExportOptions>({
+    quality: 'high',
+    dimensions: 'original'
+  });
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
@@ -1119,6 +1141,58 @@ function App() {
       {currentVideo && !isVideoReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50">
           <div className="text-white">Preparing video...</div>
+        </div>
+      )}
+
+      {showExportDialog && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536] max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-[#d7dadc] mb-4">Export Options</h3>
+            
+            <div className="space-y-4 mb-6">
+              <div>
+                <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Quality</label>
+                <select 
+                  value={exportOptions.quality}
+                  onChange={(e) => setExportOptions(prev => ({ ...prev, quality: e.target.value as ExportOptions['quality'] }))}
+                  className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
+                >
+                  {Object.entries(EXPORT_PRESETS).map(([key, preset]) => (
+                    <option key={key} value={key}>{preset.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Dimensions</label>
+                <select 
+                  value={exportOptions.dimensions}
+                  onChange={(e) => setExportOptions(prev => ({ ...prev, dimensions: e.target.value as ExportOptions['dimensions'] }))}
+                  className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
+                >
+                  {Object.entries(DIMENSION_PRESETS).map(([key, preset]) => (
+                    <option key={key} value={key}>{preset.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <Button 
+                variant="outline" 
+                onClick={() => setShowExportDialog(false)}
+                className="bg-transparent border-[#343536] text-[#d7dadc] hover:bg-[#272729] hover:text-[#d7dadc]"
+              >
+                Cancel
+              </Button>
+              <Button 
+                onClick={startExport}
+                className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white"
+              >
+                Export Video
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

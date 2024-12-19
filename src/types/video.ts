@@ -1,3 +1,6 @@
+export type ExportQuality = 'original' | 'high' | 'medium' | 'small';
+export type DimensionPreset = 'original' | '1080p' | '720p' | '480p';
+
 export interface ZoomKeyframe {
   time: number;
   duration: number;
@@ -34,4 +37,23 @@ export interface VideoMetadata {
   duration: number;
   width: number;
   height: number;
+}
+
+export interface ExportOptions {
+  quality: ExportQuality;
+  dimensions: DimensionPreset;
+  video?: HTMLVideoElement;
+  canvas?: HTMLCanvasElement;
+  tempCanvas?: HTMLCanvasElement;
+  segment?: VideoSegment;
+  backgroundConfig?: BackgroundConfig;
+  mousePositions?: MousePosition[];
+  onProgress?: (progress: number) => void;
+}
+
+export interface ExportPreset {
+  width: number;
+  height: number;
+  bitrate: number;
+  label: string;
 } 
