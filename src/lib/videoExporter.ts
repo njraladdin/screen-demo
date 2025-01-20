@@ -73,7 +73,7 @@ export const DIMENSION_PRESETS: Record<DimensionPreset, DimensionPresetConfig> =
 
 export class VideoExporter {
   private isExporting = false;
-  private lastProgress = 0;
+  private lastVideoTime = 0;  // Add this to track video time
 
   private setupMediaRecorder(stream: MediaStream, quality: ExportQuality): MediaRecorder {
     const options = {
@@ -97,8 +97,15 @@ export class VideoExporter {
       return Promise.reject('Export already in progress');
     }
 
+    console.log('[VideoExporter] Starting export with options:', {
+      trimStart: options.segment.trimStart,
+      trimEnd: options.segment.trimEnd,
+      videoDuration: options.video.duration
+    });
+
     this.isExporting = true;
-    this.lastProgress = 0;
+    this.lastVideoTime = 0;  // Reset at start
+    let hasReachedEnd = false;
     const { video, canvas, tempCanvas, segment } = options;
     
     // Store original video state
@@ -151,30 +158,55 @@ export class VideoExporter {
     let recordingComplete = false;
 
     try {
-      // Create a promise that resolves when recording is complete
       const recordingPromise = new Promise<Blob>((resolve) => {
         mediaRecorder.ondataavailable = (e) => {
+          console.log('[VideoExporter] Data available:', { 
+            size: e.data.size,
+            state: mediaRecorder.state,
+            currentTime: video.currentTime 
+          });
           if (e.data.size > 0) chunks.push(e.data);
         };
 
         mediaRecorder.onstop = () => {
+          console.log('[VideoExporter] MediaRecorder stopped', {
+            chunksCount: chunks.length,
+            totalSize: chunks.reduce((acc, chunk) => acc + chunk.size, 0),
+            hasReachedEnd,
+            recordingComplete
+          });
           recordingComplete = true;
           const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
           resolve(blob);
         };
       });
 
-      // Start recording
+      console.log('[VideoExporter] Starting MediaRecorder');
       mediaRecorder.start(1000);
 
-      // Set video to start position
+      console.log('[VideoExporter] Setting video to start position:', segment.trimStart);
       video.currentTime = segment.trimStart;
       await video.play();
 
-      // Wait for video completion
       await new Promise<void>((resolve, reject) => {
         const timeUpdateHandler = () => {
-          if (recordingComplete) return;
+          if (recordingComplete || hasReachedEnd) return;
+
+          // Simple loop detection - if time goes backwards, we've looped
+          if (this.lastVideoTime > 0 && video.currentTime < this.lastVideoTime) {
+            console.log('[VideoExporter] Detected video loop, completing export', {
+              previousTime: this.lastVideoTime,
+              currentTime: video.currentTime
+            });
+            hasReachedEnd = true;
+            video.pause();
+            video.removeEventListener('timeupdate', timeUpdateHandler);
+            mediaRecorder.stop();
+            resolve();
+            return;
+          }
+
+          this.lastVideoTime = video.currentTime;
 
           const renderContext = {
             video,
@@ -186,65 +218,53 @@ export class VideoExporter {
             currentTime: video.currentTime
           };
 
-          // Simpler frame handling - just use requestAnimationFrame
           requestAnimationFrame(() => {
             if (video.readyState >= 2) {
               videoRenderer.drawFrame(renderContext, { exportMode: true });
-            }
-
-            const currentProgress = (video.currentTime - segment.trimStart) / (segment.trimEnd - segment.trimStart) * 100;
-            
-            if (currentProgress === 0 && this.lastProgress > 90) {
-              console.log('[VideoExporter] Detected completion via progress drop', {
-                lastProgress: this.lastProgress,
-                currentProgress
+            } else {
+              console.log('[VideoExporter] Skipping draw - video not ready', {
+                readyState: video.readyState,
+                currentTime: video.currentTime
               });
-              video.removeEventListener('timeupdate', timeUpdateHandler);
-              mediaRecorder.stop();
-              resolve();
-              return;
             }
 
-            this.lastProgress = currentProgress;
+            const duration = segment.trimEnd - segment.trimStart;
+            const elapsed = video.currentTime - segment.trimStart;
+            const currentProgress = (elapsed / duration) * 100;
+            
             options.onProgress?.(Math.min(currentProgress, 99.9));
-
-            if (recordingComplete) {
-              video.removeEventListener('timeupdate', timeUpdateHandler);
-              mediaRecorder.stop();
-              resolve();
-            }
           });
         };
 
         video.addEventListener('timeupdate', timeUpdateHandler);
-        video.addEventListener('error', reject);
+        video.addEventListener('error', (e) => {
+          console.error('[VideoExporter] Video error:', e);
+          reject(e);
+        });
       });
 
-      // Wait for the MediaRecorder to finish and get the final blob
       const finalBlob = await recordingPromise;
-
-      // Only now pause the video and restore state
-      video.pause();
-      
+      console.log('[VideoExporter] Export completed successfully', {
+        size: finalBlob.size,
+        type: finalBlob.type
+      });
       return finalBlob;
 
     } catch (error) {
       console.error('[VideoExporter] Export failed:', error);
       throw error;
     } finally {
-      // Only cleanup after we're sure recording is complete
       if (!recordingComplete && mediaRecorder.state !== 'inactive') {
         mediaRecorder.stop();
       }
       
       stream.getTracks().forEach(track => track.stop());
+      this.lastVideoTime = 0;  // Reset in cleanup
       this.isExporting = false;
 
       // Restore video state
       video.currentTime = originalTime;
       if (originalPaused) video.pause();
-
-      this.lastProgress = 0;
     }
   }
 
