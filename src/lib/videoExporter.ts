@@ -62,12 +62,6 @@ export const DIMENSION_PRESETS: Record<DimensionPreset, DimensionPresetConfig> =
     width: 1280, 
     height: 720, 
     label: '720p' 
-  },
-  '480p': { 
-    type: 'fixed',
-    width: 854, 
-    height: 480, 
-    label: '480p' 
   }
 } as const;
 

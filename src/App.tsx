@@ -726,7 +726,7 @@ function App() {
   // Add new state for export options
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
-    quality: 'high',
+    quality: 'original',
     dimensions: 'original'
   });
 

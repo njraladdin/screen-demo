@@ -1,5 +1,5 @@
 export type ExportQuality = 'original' | 'high' | 'medium' | 'small';
-export type DimensionPreset = 'original' | '1080p' | '720p' | '480p';
+export type DimensionPreset = 'original' | '1080p' | '720p';
 
 export interface ZoomKeyframe {
   time: number;
