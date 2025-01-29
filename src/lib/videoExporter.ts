@@ -76,11 +76,32 @@ export class VideoExporter {
   private lastVideoTime = 0;  // Add this to track video time
 
   private setupMediaRecorder(stream: MediaStream, quality: ExportQuality): MediaRecorder {
+    // Try different MIME types in order of preference
+    const mimeTypes = [
+      'video/mp4;codecs=h264',
+      'video/mp4',
+      'video/webm;codecs=h264',
+      'video/webm'
+    ];
+
+    let selectedMimeType = '';
+    for (const mimeType of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(mimeType)) {
+        selectedMimeType = mimeType;
+        break;
+      }
+    }
+
+    if (!selectedMimeType) {
+      console.warn('[VideoExporter] No supported video MIME types found, falling back to default');
+    }
+
     const options = {
       videoBitsPerSecond: EXPORT_PRESETS[quality].bitrate,
-      mimeType: 'video/webm;codecs=vp9'
+      mimeType: selectedMimeType || 'video/webm;codecs=vp9'
     };
 
+    console.log('[VideoExporter] Using MIME type:', options.mimeType);
     return new MediaRecorder(stream, options);
   }
 

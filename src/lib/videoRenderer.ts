@@ -33,6 +33,8 @@ export class VideoRenderer {
   };
   private SQUISH_DURATION = 100; // Faster initial squish for snappier feel
   private RELEASE_DURATION = 600; // Longer release for spring effect
+  private lastDrawTime: number = 0;
+  private readonly FRAME_INTERVAL = 1000 / 60; // 16.67ms for 60fps
 
   private readonly DEFAULT_STATE: ZoomKeyframe = {
     time: 0,
@@ -50,19 +52,17 @@ export class VideoRenderer {
   public startAnimation(renderContext: RenderContext) {
     console.log('[VideoRenderer] Starting animation');
     this.stopAnimation();
-
-    let lastFrameTime = performance.now();
-    const targetFrameInterval = 1000 / 60; // Target 60fps
+    this.lastDrawTime = 0; // Reset timing on new animation
 
     const animate = () => {
       const now = performance.now();
-      const elapsed = now - lastFrameTime;
+      const elapsed = now - this.lastDrawTime;
 
-      // Only render if enough time has passed for next frame
-      if (elapsed >= targetFrameInterval) {
+      // Only draw if enough time has passed or if it's the first frame
+      if (this.lastDrawTime === 0 || elapsed >= this.FRAME_INTERVAL) {
         this.drawFrame(renderContext)
           .catch(err => console.error('[VideoRenderer] Draw error:', err));
-        lastFrameTime = now;
+        this.lastDrawTime = now;
       }
 
       this.animationFrame = requestAnimationFrame(animate);
@@ -75,6 +75,7 @@ export class VideoRenderer {
     if (this.animationFrame !== null) {
       cancelAnimationFrame(this.animationFrame);
       this.animationFrame = null;
+      this.lastDrawTime = 0; // Reset timing when stopping
     }
   }
 
@@ -83,6 +84,9 @@ export class VideoRenderer {
     options: RenderOptions = {}
   ): Promise<void> => {
     if (this.isDrawing) return;
+    
+    // Don't do frame timing check here - it's handled by startAnimation for preview
+    // and by MediaRecorder for export
     
     const { video, canvas, tempCanvas, segment, backgroundConfig, mousePositions } = context;
     if (!video || !canvas || !segment) return;

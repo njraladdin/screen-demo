@@ -1,0 +1,4 @@
+TODO 
+
+on export, limit fps to 60 . 
+export to mp4 
