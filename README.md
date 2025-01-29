@@ -5,26 +5,31 @@
 </div>
 
 ![Demo Screenshot](public/screenshot.png)
+## Download
+
+<div align="center">
+  <h3>
+    <a href="https://github.com/njraladdin/screen-demo/releases">Download for Windows →</a>
+  </h3>
+</div>
 
 ## Features
 
-- **High Quality Screen Recording**
+- **Screen Recording**
+  - Record any monitor
+  - Capture mouse movements and clicks
   - Multi-monitor support
-  - 60 FPS recording
-  - Hardware-accelerated encoding
-  - Cursor movement capture
 
-- **Simple Video Editing**
+- **Video Effects**
   - Add smooth zoom animations
-  - Customize background styles
-  - Adjust video scale and border radius
+  - Customize background styles and gradients
   - Enhanced cursor visualization
-  - Trim video segments
+  - Adjust video scale and borders
 
-- **Export Options** 
-  - Export to WebM
-  - Up to 4K resolution support
-  - High bitrate options for quality
+- **Simple to Use**
+  - Easy trim and edit
+  - Quick export
+  - No account needed
 
 ## Installation
 
@@ -53,18 +58,14 @@ npm run tauri build
 
 ## Development
 
-Built with:
-- Tauri (Rust)
-- React
-- TypeScript
-- Windows Capture API
+Built with Tauri, React, and TypeScript.
 
 Requirements:
 - Node.js 16+
 - Rust toolchain
-- Windows 10+ (for screen capture)
+- Windows 10+
 
 ## License
 
-This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License
 

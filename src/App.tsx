@@ -734,9 +734,19 @@ function App() {
     <div className="min-h-screen bg-[#1a1a1b]">
       <header className="bg-[#1a1a1b] border-b border-[#343536]">
         <div className="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-          <div className="flex items-center gap-2">
-            <img src={logo} alt="Screen Demo Logo" className="w-8 h-8" />
-            <h1 className="text-2xl font-bold text-[#d7dadc]">Screen Demo</h1>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <img src={logo} alt="Screen Demo Logo" className="w-8 h-8" />
+              <h1 className="text-2xl font-bold text-[#d7dadc]">Screen Demo</h1>
+            </div>
+            <a 
+              href="https://github.com/njraladdin" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-[#818384] hover:text-[#d7dadc] transition-colors text-sm underline"
+            >
+              dev: @njraladdin
+            </a>
           </div>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
