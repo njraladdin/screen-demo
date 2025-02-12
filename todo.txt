@@ -1,4 +1,11 @@
 TODO 
 
-on export, limit fps to 60 . 
-export to mp4 
+fix bug when replaying trimmed video. stuck in trimmed section, done 
+fix bugs when exporting trimmed video. 
+
+add speed percentage 
+
+better comrpession without losing quality when exporting video. 
+
+add motion blur to mouse 
+

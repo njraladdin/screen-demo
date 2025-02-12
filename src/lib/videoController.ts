@@ -128,12 +128,17 @@ export class VideoController {
 
   private handleTimeUpdate = () => {
     if (!this.state.isSeeking) {
+      const currentTime = this.video.currentTime;
+      const adjustedTime = this.getAdjustedTime(currentTime);
+      
       console.log('[VideoController] Time update', {
-        time: this.video.currentTime,
+        rawTime: currentTime,
+        adjustedTime,
         playing: !this.video.paused,
         readyState: this.video.readyState
       });
-      this.setCurrentTime(this.video.currentTime);
+
+      this.setCurrentTime(adjustedTime);
       this.renderFrame();
     }
   };
@@ -206,7 +211,7 @@ export class VideoController {
       segment: this.renderOptions.segment,
       backgroundConfig: this.renderOptions.backgroundConfig,
       mousePositions: this.renderOptions.mousePositions,
-      currentTime: this.video.currentTime
+      currentTime: this.getAdjustedTime(this.video.currentTime)
     };
 
     // Only draw if video is ready
@@ -224,9 +229,17 @@ export class VideoController {
   }
 
   public play() {
-    if (this.state.isReady) {
-      this.video.play();
+    if (!this.state.isReady) return;
+    
+    // If we're at the trim end, jump back to trim start before playing
+    if (this.renderOptions?.segment) {
+      const { trimStart, trimEnd } = this.renderOptions.segment;
+      if (this.video.currentTime >= trimEnd) {
+        this.video.currentTime = trimStart;
+      }
     }
+    
+    this.video.play();
   }
 
   public pause() {
@@ -235,6 +248,16 @@ export class VideoController {
 
   public seek(time: number) {
     console.log('[VideoController] Seeking to:', time);
+    
+    if (this.renderOptions?.segment) {
+      const { trimStart, trimEnd } = this.renderOptions.segment;
+      const trimDuration = trimEnd - trimStart;
+      
+      // Normalize the seek time to be within the trimmed section
+      const normalizedTime = trimStart + ((time - trimStart) % trimDuration);
+      time = normalizedTime;
+    }
+    
     this.setSeeking(true);
     this.video.currentTime = time;
   }
@@ -305,6 +328,24 @@ export class VideoController {
       this.video.load(); // Explicitly load the video
     });
   };
+
+  // Add this new method to handle time adjustment
+  private getAdjustedTime(time: number): number {
+    if (!this.renderOptions?.segment) return time;
+    
+    const { trimStart, trimEnd } = this.renderOptions.segment;
+    const trimDuration = trimEnd - trimStart;
+    
+    // Calculate the relative position within the trimmed section
+    const relativeTime = ((time - trimStart) % trimDuration);
+    
+    // If time is negative, adjust it to wrap from the end
+    const adjustedTime = relativeTime < 0 
+      ? trimEnd + relativeTime 
+      : trimStart + relativeTime;
+      
+    return adjustedTime;
+  }
 }
 
 export const createVideoController = (options: VideoControllerOptions) => {

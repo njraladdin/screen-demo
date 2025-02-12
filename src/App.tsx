@@ -43,6 +43,21 @@ const sortMonitorsByPosition = (monitors: MonitorInfo[]) => {
     }));
 };
 
+// Added helper function to calculate the range for a zoom keyframe.
+// It returns an object containing the range start and end for the given keyframe.
+const getKeyframeRange = (
+  keyframes: ZoomKeyframe[],
+  index: number
+): { rangeStart: number; rangeEnd: number } => {
+  const keyframe = keyframes[index];
+  const prevKeyframe = index > 0 ? keyframes[index - 1] : null;
+  const rangeStart =
+    prevKeyframe && keyframe.time - prevKeyframe.time <= 1.0
+      ? prevKeyframe.time
+      : Math.max(0, keyframe.time - 1.0);
+  return { rangeStart, rangeEnd: keyframe.time };
+};
+
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -634,38 +649,24 @@ function App() {
     // Find the active keyframe based on current time
     const findActiveKeyframe = () => {
       const sortedKeyframes = [...segment.zoomKeyframes].sort((a, b) => a.time - b.time);
-      
+
       for (let i = 0; i < sortedKeyframes.length; i++) {
-        const keyframe = sortedKeyframes[i];
-        
-        // Calculate range start and end
-        let rangeStart;
-        const prevKeyframe = i > 0 ? sortedKeyframes[i - 1] : null;
-        
-        if (prevKeyframe && (keyframe.time - prevKeyframe.time) <= 1.0) {
-          // If previous keyframe exists and is within 1 second, connect to it
-          rangeStart = prevKeyframe.time;
-        } else {
-          // Otherwise, start range 1 second before current keyframe
-          rangeStart = Math.max(0, keyframe.time - 1.0);
-        }
-        
-        const rangeEnd = keyframe.time;
-        
+        // Use the helper to compute rangeStart and rangeEnd
+        const { rangeStart, rangeEnd } = getKeyframeRange(sortedKeyframes, i);
+
         // Check if current time is within this keyframe's range
         if (currentTime >= rangeStart && currentTime <= rangeEnd) {
-          // Only update if we're not already editing this keyframe
           if (editingKeyframeId !== i) {
             setEditingKeyframeId(i);
-            setZoomFactor(keyframe.zoomFactor);
-            if (activePanel !== 'zoom') {
-              setActivePanel('zoom');
+            setZoomFactor(sortedKeyframes[i].zoomFactor);
+            if (activePanel !== "zoom") {
+              setActivePanel("zoom");
             }
           }
           return;
         }
       }
-      
+
       // If we're not in any keyframe's range, deselect
       if (editingKeyframeId !== null) {
         setEditingKeyframeId(null);
@@ -1044,65 +1045,67 @@ function App() {
                   </>
                 )}
 
-                {segment?.zoomKeyframes.map((keyframe, index) => {
-                  const active = editingKeyframeId === index;
-                  
-                  // Get previous keyframe
-                  const prevKeyframe = index > 0 ? segment.zoomKeyframes[index - 1] : null;
-                  
-                  // Calculate range start
-                  let rangeStart;
-                  if (prevKeyframe && (keyframe.time - prevKeyframe.time) <= 1.0) {
-                    // If previous keyframe exists and is within 1 second, connect to it
-                    rangeStart = prevKeyframe.time;
-                  } else {
-                    // Otherwise, start range 1 second before current keyframe
-                    rangeStart = Math.max(0, keyframe.time - 1.0);
-                  }
-                  
-                  // Range always ends at current keyframe
-                  const rangeEnd = keyframe.time;
-                  
-                  return (
-                    <div key={index}>
-                      <div 
-                        className={`absolute h-full cursor-pointer transition-colors border-r border-[#0079d3] ${active ? 'opacity-100' : 'opacity-80'}`} 
-                        style={{
-                          left: `${(rangeStart / duration) * 100}%`, 
-                          width: `${((rangeEnd - rangeStart) / duration) * 100}%`, 
-                          zIndex: 20, 
-                          background: `linear-gradient(90deg, rgba(0, 121, 211, 0.1) 0%, rgba(0, 121, 211, ${0.1 + (keyframe.zoomFactor - 1) * 0.3}) 100%)`
-                        }} 
-                      />
-                      <div 
-                        className="absolute cursor-pointer group" 
-                        style={{
-                          left: `${(keyframe.time / duration) * 100}%`, 
-                          transform: 'translateX(-50%)', 
-                          top: '-32px', 
-                          height: '56px'
-                        }} 
-                        onClick={(e) => {
-                          e.stopPropagation(); 
-                          if (videoRef.current) {
-                            videoRef.current.currentTime = keyframe.time; 
-                            setCurrentTime(keyframe.time); 
-                            setEditingKeyframeId(index); 
-                            setActivePanel('zoom');
-                          }
-                        }}
-                      >
-                        <div className="relative flex flex-col items-center">
-                          <div className={`px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap ${active ? 'bg-[#0079d3] text-white' : 'bg-[#0079d3]/20 text-[#0079d3]'}`}>
-                            {Math.round((keyframe.zoomFactor - 1) * 100)}%
+                {segment && (
+                  <>
+                    {segment.zoomKeyframes.map((keyframe, index) => {
+                      const active = editingKeyframeId === index;
+                      // Use the helper to calculate the keyframe range
+                      const { rangeStart, rangeEnd } = getKeyframeRange(segment.zoomKeyframes, index);
+
+                      return (
+                        <div key={index}>
+                          <div
+                            className={`absolute h-full cursor-pointer transition-colors border-r border-[#0079d3] ${
+                              active ? "opacity-100" : "opacity-80"
+                            }`}
+                            style={{
+                              left: `${(rangeStart / duration) * 100}%`,
+                              width: `${((rangeEnd - rangeStart) / duration) * 100}%`,
+                              zIndex: 20,
+                              background: `linear-gradient(90deg, rgba(0, 121, 211, 0.1) 0%, rgba(0, 121, 211, ${
+                                0.1 + (keyframe.zoomFactor - 1) * 0.3
+                              }) 100%)`
+                            }}
+                          />
+                          <div
+                            className="absolute cursor-pointer group"
+                            style={{
+                              left: `${(keyframe.time / duration) * 100}%`,
+                              transform: "translateX(-50%)",
+                              top: "-32px",
+                              height: "56px"
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (videoRef.current) {
+                                videoRef.current.currentTime = keyframe.time;
+                                setCurrentTime(keyframe.time);
+                                setEditingKeyframeId(index);
+                                setActivePanel("zoom");
+                              }
+                            }}
+                          >
+                            <div className="relative flex flex-col items-center">
+                              <div
+                                className={`px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                                  active ? "bg-[#0079d3] text-white" : "bg-[#0079d3]/20 text-[#0079d3]"
+                                }`}
+                              >
+                                {Math.round((keyframe.zoomFactor - 1) * 100)}%
+                              </div>
+                              <div
+                                className={`w-3 h-3 bg-[#0079d3] rounded-full hover:scale-125 transition-transform ${
+                                  active ? "ring-2 ring-white" : ""
+                                }`}
+                              />
+                              <div className="w-[1px] h-10 bg-[#0079d3]/30 group-hover:bg-[#0079d3]/50" />
+                            </div>
                           </div>
-                          <div className={`w-3 h-3 bg-[#0079d3] rounded-full hover:scale-125 transition-transform ${active ? 'ring-2 ring-white' : ''}`} />
-                          <div className="w-[1px] h-10 bg-[#0079d3]/30 group-hover:bg-[#0079d3]/50" />
                         </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </>
+                )}
 
                 <div className="absolute top-[-16px] bottom-0 flex flex-col items-center pointer-events-none z-30" style={{left: `${(currentTime / duration) * 100}%`, transform: 'translateX(-50%)'}}>
                   <div className={`w-4 h-3 ${!currentVideo ? 'bg-gray-600' : 'bg-red-500'} rounded-t`} />
