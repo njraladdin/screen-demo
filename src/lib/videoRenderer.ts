@@ -35,7 +35,7 @@ export class VideoRenderer {
   private SQUISH_DURATION = 100; // Faster initial squish for snappier feel
   private RELEASE_DURATION = 600; // Longer release for spring effect
   private lastDrawTime: number = 0;
-  private readonly FRAME_INTERVAL = 1000 / 60; // 16.67ms for 60fps
+  private readonly FRAME_INTERVAL = 1000 / 120; // Increase to 120fps for smoother animation
 
   private readonly DEFAULT_STATE: ZoomKeyframe = {
     time: 0,
@@ -46,6 +46,8 @@ export class VideoRenderer {
     easingType: 'linear' as const
   };
 
+  private smoothedPositions: MousePosition[] | null = null;
+
   constructor() {
     // Nothing needed here for now
   }
@@ -54,6 +56,7 @@ export class VideoRenderer {
     console.log('[VideoRenderer] Starting animation');
     this.stopAnimation();
     this.lastDrawTime = 0; // Reset timing on new animation
+    this.smoothedPositions = null; // Reset smoothed positions
 
     const animate = () => {
       const now = performance.now();
@@ -407,138 +410,122 @@ export class VideoRenderer {
     return 1 - Math.pow(1 - x, 3);
   }
 
+  private catmullRomInterpolate(
+    p0: number,
+    p1: number,
+    p2: number,
+    p3: number,
+    t: number
+  ): number {
+    const t2 = t * t;
+    const t3 = t2 * t;
+    
+    return 0.5 * (
+      (2 * p1) +
+      (-p0 + p2) * t +
+      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+      (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+    );
+  }
+
+  private smoothMousePositions(
+    positions: MousePosition[],
+    targetFps: number = 60
+  ): MousePosition[] {
+    if (positions.length < 4) return positions;
+
+    const smoothed: MousePosition[] = [];
+    const timeStep = 1 / targetFps;
+
+    // Process positions in groups of 4 for Catmull-Rom interpolation
+    for (let i = 0; i < positions.length - 3; i++) {
+      const p0 = positions[i];
+      const p1 = positions[i + 1];
+      const p2 = positions[i + 2];
+      const p3 = positions[i + 3];
+
+      // Calculate how many frames we need between these points
+      const segmentDuration = p2.timestamp - p1.timestamp;
+      const numFrames = Math.ceil(segmentDuration * targetFps);
+
+      // Generate smooth intermediate positions
+      for (let frame = 0; frame < numFrames; frame++) {
+        const t = frame / numFrames;
+        const timestamp = p1.timestamp + (segmentDuration * t);
+
+        const x = this.catmullRomInterpolate(p0.x, p1.x, p2.x, p3.x, t);
+        const y = this.catmullRomInterpolate(p0.y, p1.y, p2.y, p3.y, t);
+
+        // Determine click state based on surrounding points
+        const isClicked = Boolean(p1.isClicked || p2.isClicked);
+
+        smoothed.push({ x, y, timestamp, isClicked });
+      }
+    }
+
+    return smoothed;
+  }
+
   private interpolateCursorPosition(
-    currentTime: number, 
+    currentTime: number,
     mousePositions: MousePosition[],
     backgroundConfig: BackgroundConfig
-  ): {x: number, y: number, isClicked: boolean} | null {
+  ): { x: number; y: number; isClicked: boolean } | null {
     if (mousePositions.length === 0) return null;
 
-    const lookAheadTime = currentTime + 1/30;
-
-    // Find the current position
-    const currentPos = mousePositions.find(pos => pos.timestamp >= lookAheadTime) || 
-                      mousePositions[mousePositions.length - 1];
-
-    // Debug log when we find a clicked position
-    if (currentPos.isClicked) {
-      console.log('[VideoRenderer] Found clicked position at time:', currentPos.timestamp);
+    // Cache smoothed positions
+    if (!this.smoothedPositions || this.smoothedPositions.length === 0) {
+      this.smoothedPositions = this.smoothMousePositions(mousePositions);
     }
 
-    // Calculate cursor speed using nearby positions
-    const prevPos = mousePositions.find(pos => pos.timestamp < currentPos.timestamp);
-    let speed = 0;
-    if (prevPos) {
-      const dx = currentPos.x - prevPos.x;
-      const dy = currentPos.y - prevPos.y;
-      const dt = currentPos.timestamp - prevPos.timestamp;
-      speed = Math.sqrt(dx * dx + dy * dy) / dt;
-    }
-
-    // Adjust window size based on speed and user smoothness preference
-    const smoothness = backgroundConfig.cursorSmoothness || 5;
-    const baseWindowSize = smoothness;  // Window size now based on smoothness
-    const windowSize = Math.max(2, baseWindowSize - (speed * 2));
-
-    const relevantPositions = mousePositions
-      .filter(pos => 
-        pos.timestamp >= lookAheadTime - (windowSize/30) && 
-        pos.timestamp <= lookAheadTime + (windowSize/30)
-      );
-
-    if (relevantPositions.length === 0) {
+    const positions = this.smoothedPositions;
+    
+    // Find the exact position for the current time
+    const exactMatch = positions.find(pos => Math.abs(pos.timestamp - currentTime) < 0.001);
+    if (exactMatch) {
       return {
-        x: currentPos.x,
-        y: currentPos.y,
-        isClicked: currentPos.isClicked || false
+        x: exactMatch.x,
+        y: exactMatch.y,
+        isClicked: Boolean(exactMatch.isClicked)
       };
     }
 
-    // Rest of the weighted average calculation...
-    let totalWeight = 0;
-    let smoothX = 0;
-    let smoothY = 0;
+    // Find the two closest positions
+    const nextIndex = positions.findIndex(pos => pos.timestamp > currentTime);
+    if (nextIndex === -1) {
+      const last = positions[positions.length - 1];
+      return {
+        x: last.x,
+        y: last.y,
+        isClicked: Boolean(last.isClicked)
+      };
+    }
 
-    relevantPositions.forEach(pos => {
-      const timeDiff = Math.abs(pos.timestamp - lookAheadTime);
-      const weight = 1 / (timeDiff + 0.1);
-      totalWeight += weight;
-      smoothX += pos.x * weight;
-      smoothY += pos.y * weight;
-    });
+    if (nextIndex === 0) {
+      const first = positions[0];
+      return {
+        x: first.x,
+        y: first.y,
+        isClicked: Boolean(first.isClicked)
+      };
+    }
+
+    // Linear interpolation between the two closest points
+    const prev = positions[nextIndex - 1];
+    const next = positions[nextIndex];
+    const t = (currentTime - prev.timestamp) / (next.timestamp - prev.timestamp);
 
     return {
-      x: smoothX / totalWeight,
-      y: smoothY / totalWeight,
-      isClicked: currentPos.isClicked || false
+      x: prev.x + (next.x - prev.x) * t,
+      y: prev.y + (next.y - prev.y) * t,
+      isClicked: Boolean(prev.isClicked || next.isClicked)
     };
   }
 
   private drawMouseCursor(ctx: CanvasRenderingContext2D, x: number, y: number, isClicked: boolean, scale: number = 2) {
-    // Add SVG filter for directional blur if not already present
-    if (!document.querySelector('#cursor-motion-blur')) {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.innerHTML = `
-        <defs>
-          <filter id="cursor-motion-blur">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="0,0" />
-            <feOffset dx="0" dy="0" result="offset" />
-            <feComposite in="SourceGraphic" in2="offset" operator="over" />
-          </filter>
-        </defs>
-      `;
-      svg.style.position = 'absolute';
-      svg.style.width = '0';
-      svg.style.height = '0';
-      document.body.appendChild(svg);
-    }
-
-    // Get the filter elements
-    const blurFilter = document.querySelector('#cursor-motion-blur feGaussianBlur');
-    const offsetFilter = document.querySelector('#cursor-motion-blur feOffset');
-    if (!blurFilter || !offsetFilter) return;
-
-    // Calculate movement speed and direction
-    if (this.cursorAnimation.lastPosition) {
-      const dx = x - this.cursorAnimation.lastPosition.x;
-      const dy = y - this.cursorAnimation.lastPosition.y;
-      const speed = Math.sqrt(dx * dx + dy * dy);
-      
-      if (speed > 2) {
-        // Calculate movement angle and normalize direction vector
-        const angle = Math.atan2(dy, dx);
-        const dirX = Math.cos(angle);
-        const dirY = Math.sin(angle);
-        
-        // Make blur stronger in movement direction
-        const blurAmount = Math.min(speed * 1, 4);
-        const blurX = blurAmount * dirX;
-        const blurY = blurAmount * dirY;
-        
-        // Add slight offset in movement direction for trail effect
-        const offsetAmount = Math.min(speed * 0.25, 2);
-        const offsetX = -offsetAmount * dirX; // Negative to trail behind movement
-        const offsetY = -offsetAmount * dirY;
-        
-        blurFilter.setAttribute('stdDeviation', `${Math.abs(blurX)},${Math.abs(blurY)}`);
-        offsetFilter.setAttribute('dx', String(offsetX));
-        offsetFilter.setAttribute('dy', String(offsetY));
-      } else {
-        blurFilter.setAttribute('stdDeviation', '0,0');
-        offsetFilter.setAttribute('dx', '0');
-        offsetFilter.setAttribute('dy', '0');
-      }
-    }
-
-    this.cursorAnimation.lastPosition = { x, y };
-
-    // Apply the filter to our canvas context
     ctx.save();
-    ctx.filter = 'url(#cursor-motion-blur)';
-    
-    // Draw cursor
+    // Draw cursor directly without any filters or effects
     this.drawCursorShape(ctx, x, y, isClicked, scale);
-    
     ctx.restore();
   }
 
