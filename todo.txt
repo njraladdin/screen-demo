@@ -1,9 +1,8 @@
 TODO 
 
 fix bug when replaying trimmed video. stuck in trimmed section, done 
-fix bugs when exporting trimmed video. 
 
-add speed percentage 
+add speed percentage in export, done 
 
 better comrpession without losing quality when exporting video. 
 

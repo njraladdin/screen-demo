@@ -107,6 +107,7 @@ export class VideoExporter {
     backgroundConfig: BackgroundConfig;
     mousePositions: MousePosition[];
     onProgress?: (progress: number) => void;
+    speed: number;
   }): Promise<Blob> {
     if (this.isExporting) {
       return Promise.reject('Export already in progress');
@@ -201,6 +202,10 @@ export class VideoExporter {
 
       console.log('[VideoExporter] Setting video to start position:', segment.trimStart);
       video.currentTime = segment.trimStart;
+      
+      // Set the playback rate before starting playback
+      video.playbackRate = options.speed;
+      
       await video.play();
 
       await new Promise<void>((resolve, reject) => {
@@ -280,6 +285,9 @@ export class VideoExporter {
       // Restore video state
       video.currentTime = originalTime;
       if (originalPaused) video.pause();
+
+      // Reset playback rate in cleanup
+      video.playbackRate = 1;
     }
   }
 
@@ -298,7 +306,8 @@ export class VideoExporter {
         tempCanvas: options.tempCanvas,
         segment: options.segment,
         backgroundConfig: options.backgroundConfig,
-        mousePositions: options.mousePositions
+        mousePositions: options.mousePositions,
+        speed: options.speed
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

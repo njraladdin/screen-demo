@@ -527,6 +527,7 @@ function App() {
       const exportConfig: ExportOptions = {
         quality: exportOptions.quality,
         dimensions: exportOptions.dimensions,
+        speed: exportOptions.speed,
         video: videoRef.current,
         canvas: canvasRef.current,
         tempCanvas: tempCanvasRef.current,
@@ -728,7 +729,8 @@ function App() {
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
     quality: 'original',
-    dimensions: 'original'
+    dimensions: 'original',
+    speed: 1 // Default to 100% speed
   });
 
   return (
@@ -1226,6 +1228,56 @@ function App() {
                     <option key={key} value={key}>{preset.label}</option>
                   ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Speed</label>
+                <div className="bg-[#272729] rounded-md p-3">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm text-[#d7dadc] tabular-nums">
+                        {formatTime(segment ? (segment.trimEnd - segment.trimStart) / exportOptions.speed : 0)}
+                      </span>
+                      {segment && exportOptions.speed !== 1 && (
+                        <span className={`text-xs ${exportOptions.speed > 1 ? 'text-red-400/90' : 'text-green-400/90'}`}>
+                          {exportOptions.speed > 1 ? '↓' : '↑'}
+                          {formatTime(Math.abs(
+                            (segment.trimEnd - segment.trimStart) - 
+                            ((segment.trimEnd - segment.trimStart) / exportOptions.speed)
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-sm font-medium text-[#d7dadc] tabular-nums">
+                      {Math.round(exportOptions.speed * 100)}%
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-[#818384] min-w-[36px]">Slower</span>
+                    <div className="flex-1">
+                      <input 
+                        type="range" 
+                        min="50" 
+                        max="200" 
+                        step="10"
+                        value={exportOptions.speed * 100}
+                        onChange={(e) => setExportOptions(prev => ({ 
+                          ...prev, 
+                          speed: Number(e.target.value) / 100 
+                        }))}
+                        className="w-full h-1 accent-[#0079d3] rounded-full"
+                        style={{
+                          background: `linear-gradient(to right, 
+                            #818384 0%, 
+                            #0079d3 ${((exportOptions.speed * 100 - 50) / 150) * 100}%, 
+                            #272729 ${((exportOptions.speed * 100 - 50) / 150) * 100}%)`
+                        }}
+                      />
+                    </div>
+                    <span className="text-xs text-[#818384] min-w-[36px]">Faster</span>
+                  </div>
+                </div>
               </div>
             </div>
 

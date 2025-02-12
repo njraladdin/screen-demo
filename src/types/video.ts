@@ -42,6 +42,7 @@ export interface VideoMetadata {
 export interface ExportOptions {
   quality: ExportQuality;
   dimensions: DimensionPreset;
+  speed: number;
   video?: HTMLVideoElement;
   canvas?: HTMLCanvasElement;
   tempCanvas?: HTMLCanvasElement;
