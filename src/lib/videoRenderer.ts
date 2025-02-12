@@ -20,6 +20,7 @@ interface CursorAnimationState {
   isAnimating: boolean;
   progress: number;
   isSquishing: boolean;
+  lastPosition?: { x: number; y: number };
 }
 
 export class VideoRenderer {
@@ -474,6 +475,74 @@ export class VideoRenderer {
   }
 
   private drawMouseCursor(ctx: CanvasRenderingContext2D, x: number, y: number, isClicked: boolean, scale: number = 2) {
+    // Add SVG filter for directional blur if not already present
+    if (!document.querySelector('#cursor-motion-blur')) {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.innerHTML = `
+        <defs>
+          <filter id="cursor-motion-blur">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="0,0" />
+            <feOffset dx="0" dy="0" result="offset" />
+            <feComposite in="SourceGraphic" in2="offset" operator="over" />
+          </filter>
+        </defs>
+      `;
+      svg.style.position = 'absolute';
+      svg.style.width = '0';
+      svg.style.height = '0';
+      document.body.appendChild(svg);
+    }
+
+    // Get the filter elements
+    const blurFilter = document.querySelector('#cursor-motion-blur feGaussianBlur');
+    const offsetFilter = document.querySelector('#cursor-motion-blur feOffset');
+    if (!blurFilter || !offsetFilter) return;
+
+    // Calculate movement speed and direction
+    if (this.cursorAnimation.lastPosition) {
+      const dx = x - this.cursorAnimation.lastPosition.x;
+      const dy = y - this.cursorAnimation.lastPosition.y;
+      const speed = Math.sqrt(dx * dx + dy * dy);
+      
+      if (speed > 2) {
+        // Calculate movement angle and normalize direction vector
+        const angle = Math.atan2(dy, dx);
+        const dirX = Math.cos(angle);
+        const dirY = Math.sin(angle);
+        
+        // Make blur stronger in movement direction
+        const blurAmount = Math.min(speed * 1, 4);
+        const blurX = blurAmount * dirX;
+        const blurY = blurAmount * dirY;
+        
+        // Add slight offset in movement direction for trail effect
+        const offsetAmount = Math.min(speed * 0.25, 2);
+        const offsetX = -offsetAmount * dirX; // Negative to trail behind movement
+        const offsetY = -offsetAmount * dirY;
+        
+        blurFilter.setAttribute('stdDeviation', `${Math.abs(blurX)},${Math.abs(blurY)}`);
+        offsetFilter.setAttribute('dx', String(offsetX));
+        offsetFilter.setAttribute('dy', String(offsetY));
+      } else {
+        blurFilter.setAttribute('stdDeviation', '0,0');
+        offsetFilter.setAttribute('dx', '0');
+        offsetFilter.setAttribute('dy', '0');
+      }
+    }
+
+    this.cursorAnimation.lastPosition = { x, y };
+
+    // Apply the filter to our canvas context
+    ctx.save();
+    ctx.filter = 'url(#cursor-motion-blur)';
+    
+    // Draw cursor
+    this.drawCursorShape(ctx, x, y, isClicked, scale);
+    
+    ctx.restore();
+  }
+
+  private drawCursorShape(ctx: CanvasRenderingContext2D, x: number, y: number, isClicked: boolean, scale: number = 2) {
     ctx.save();
     ctx.translate(x, y);
     const cursorScale = scale;

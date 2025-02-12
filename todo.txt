@@ -3,8 +3,8 @@ TODO
 fix bug when replaying trimmed video. stuck in trimmed section, done 
 
 add speed percentage in export, done 
+add projects save and load, done 
 
-add projects save and load 
 
 add motion blur to mouse 
 
