@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2 } from "lucide-react";
+import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
 import { videoRenderer } from '@/lib/videoRenderer';
-import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition, ExportOptions } from '@/types/video';
+import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition, ExportOptions, Project } from '@/types/video';
 import { videoExporter, EXPORT_PRESETS, DIMENSION_PRESETS } from '@/lib/videoExporter';
 import { createVideoController } from '@/lib/videoController';
 import logo from '@/assets/logo.svg';
+import { projectManager } from '@/lib/projectManager';
 
 // Replace the debounce utility with throttle
 const useThrottle = (callback: Function, limit: number) => {
@@ -733,6 +734,98 @@ function App() {
     speed: 1 // Default to 100% speed
   });
 
+  // Add these state variables in the App component
+  const [projects, setProjects] = useState<Omit<Project, 'videoBlob'>[]>([]);
+  const [showProjectsDialog, setShowProjectsDialog] = useState(false);
+
+  // Add this effect to load projects on mount
+  useEffect(() => {
+    loadProjects();
+  }, []);
+
+  // Add these functions to the App component
+  const loadProjects = async () => {
+    const projects = await projectManager.getProjects();
+    setProjects(projects);
+  };
+
+  // Add new state for the save dialog
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [projectNameInput, setProjectNameInput] = useState('');
+
+  // Add new state for current project
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+
+  // Update handleSaveProject to show different options when editing existing project
+  const handleSaveProject = async () => {
+    if (!currentVideo || !segment) return;
+    
+    if (currentProjectId) {
+      // We're editing an existing project - show save options
+      setShowSaveDialog(true);
+      setProjectNameInput(projects.find(p => p.id === currentProjectId)?.name || 'Untitled Project');
+    } else {
+      // New project
+      setShowSaveDialog(true);
+      setProjectNameInput('Untitled Project');
+    }
+  };
+
+  // Update handleSaveConfirm to handle both new and existing projects
+  const handleSaveConfirm = async () => {
+    if (!currentVideo || !segment || !projectNameInput.trim()) return;
+
+    const response = await fetch(currentVideo);
+    const videoBlob = await response.blob();
+
+    if (currentProjectId) {
+      // Update existing project
+      await projectManager.updateProject(currentProjectId, {
+        name: projectNameInput,
+        videoBlob,
+        segment,
+        backgroundConfig,
+        mousePositions
+      });
+    } else {
+      // Create new project
+      const project = await projectManager.saveProject({
+        name: projectNameInput,
+        videoBlob,
+        segment,
+        backgroundConfig,
+        mousePositions
+      });
+      setCurrentProjectId(project.id);
+    }
+
+    setShowSaveDialog(false);
+    await loadProjects();
+  };
+
+  // Update handleLoadProject to set current project ID
+  const handleLoadProject = async (projectId: string) => {
+    const project = await projectManager.loadProject(projectId);
+    if (!project) return;
+
+    // Clear previous video
+    if (currentVideo) {
+      URL.revokeObjectURL(currentVideo);
+    }
+
+    // Set up new video
+    const videoUrl = URL.createObjectURL(project.videoBlob);
+    setCurrentVideo(videoUrl);
+    setSegment(project.segment);
+    setBackgroundConfig(project.backgroundConfig);
+    setMousePositions(project.mousePositions);
+    setShowProjectsDialog(false);
+    setCurrentProjectId(projectId);
+
+    // Update video controller
+    videoControllerRef.current?.handleVideoSourceChange(videoUrl);
+  };
+
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
       <header className="bg-[#1a1a1b] border-b border-[#343536]">
@@ -788,6 +881,20 @@ function App() {
                 <Download className="w-4 h-4 mr-2" />Export Video
               </Button>
             )}
+            {currentVideo && (
+              <Button
+                onClick={handleSaveProject}
+                className="bg-[#272729] hover:bg-[#343536] text-[#d7dadc]"
+              >
+                <Save className="w-4 h-4 mr-2" />Save Project
+              </Button>
+            )}
+            <Button
+              onClick={() => setShowProjectsDialog(true)}
+              className="bg-[#272729] hover:bg-[#343536] text-[#d7dadc]"
+            >
+              <FolderOpen className="w-4 h-4 mr-2" />Recent Projects
+            </Button>
           </div>
         </div>
       </header>
@@ -1294,6 +1401,95 @@ function App() {
                 className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white"
               >
                 Export Video
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProjectsDialog && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536] max-w-2xl w-full mx-4">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-semibold text-[#d7dadc]">Recent Projects</h3>
+              <Button
+                variant="ghost"
+                onClick={() => setShowProjectsDialog(false)}
+                className="text-[#818384] hover:text-[#d7dadc]"
+              >
+                ✕
+              </Button>
+            </div>
+
+            {projects.length === 0 ? (
+              <div className="text-center py-8 text-[#818384]">
+                No saved projects yet
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                {projects.map((project) => (
+                  <div
+                    key={project.id}
+                    className="flex items-center justify-between p-4 rounded-lg border border-[#343536] hover:bg-[#272729] transition-colors"
+                  >
+                    <div>
+                      <h4 className="text-[#d7dadc] font-medium">{project.name}</h4>
+                      <p className="text-sm text-[#818384]">
+                        Last modified: {new Date(project.lastModified).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={() => handleLoadProject(project.id)}
+                        className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white"
+                      >
+                        Load Project
+                      </Button>
+                      <Button
+                        onClick={async () => {
+                          await projectManager.deleteProject(project.id);
+                          await loadProjects();
+                        }}
+                        variant="destructive"
+                        className="bg-red-500/10 hover:bg-red-500/20 text-red-500"
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showSaveDialog && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536] max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-[#d7dadc] mb-4">Save Project</h3>
+            <input
+              type="text"
+              value={projectNameInput}
+              onChange={(e) => setProjectNameInput(e.target.value)}
+              placeholder="Enter project name"
+              className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc] mb-6"
+              autoFocus
+            />
+            <div className="flex justify-end gap-3">
+              <Button
+                variant="outline"
+                onClick={() => setShowSaveDialog(false)}
+                className="bg-transparent border-[#343536] text-[#d7dadc] hover:bg-[#272729] hover:text-[#d7dadc]"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSaveConfirm}
+                disabled={!projectNameInput.trim()}
+                className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white disabled:opacity-50"
+              >
+                Save Project
               </Button>
             </div>
           </div>

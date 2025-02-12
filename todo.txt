@@ -4,7 +4,11 @@ fix bug when replaying trimmed video. stuck in trimmed section, done
 
 add speed percentage in export, done 
 
-better comrpession without losing quality when exporting video. 
+add projects save and load 
 
 add motion blur to mouse 
+
+
+better comrpession without losing quality when exporting video. 
+
 

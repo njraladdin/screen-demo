@@ -57,4 +57,15 @@ export interface ExportPreset {
   height: number;
   bitrate: number;
   label: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  createdAt: number;
+  lastModified: number;
+  videoBlob: Blob;
+  segment: VideoSegment;
+  backgroundConfig: BackgroundConfig;
+  mousePositions: MousePosition[];
 } 
