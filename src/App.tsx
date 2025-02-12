@@ -729,8 +729,8 @@ function App() {
   // Add new state for export options
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportOptions, setExportOptions] = useState<ExportOptions>({
-    quality: 'original',
-    dimensions: 'original',
+    quality: 'balanced',
+    dimensions: '1080p',
     speed: 1 // Default to 100% speed
   });
 
