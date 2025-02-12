@@ -4,12 +4,8 @@ fix bug when replaying trimmed video. stuck in trimmed section, done
 add speed percentage in export, done 
 add projects save and load, done 
 add motion blur to mouse, done 
-
-
 increease fps to 120, done 
-
-
-fix artifacts in recorded video (black flash)
+increase bitrate to 50mbps, done 
 
 
 
