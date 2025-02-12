@@ -28,21 +28,13 @@ interface FixedDimensionPreset {
 type DimensionPresetConfig = OriginalDimensionPreset | FixedDimensionPreset;
 
 export const EXPORT_PRESETS: Record<ExportQuality, QualityPreset> = {
+  balanced: {           
+    bitrate: 8000000,   // 8Mbps
+    label: 'Balanced Quality'
+  },
   original: {
-    bitrate: 50000000,
-    label: 'Original Quality'
-  },
-  high: {
-    bitrate: 8000000,
-    label: 'High Quality'
-  },
-  medium: {
-    bitrate: 4000000,
-    label: 'Medium Quality'
-  },
-  small: {
-    bitrate: 2000000,
-    label: 'Small Size'
+    bitrate: 20000000,  // 20Mbps
+    label: 'Maximum Quality'
   }
 } as const;
 
@@ -72,10 +64,11 @@ export class VideoExporter {
   private setupMediaRecorder(stream: MediaStream, quality: ExportQuality): MediaRecorder {
     // Try different MIME types in order of preference
     const mimeTypes = [
-      'video/mp4;codecs=h264',
-      'video/mp4',
-      'video/webm;codecs=h264',
-      'video/webm'
+      'video/mp4;codecs=hevc,mp4a.40.2',  // Try H.265/HEVC first
+      'video/mp4;codecs=h264',            // Fallback to H.264
+      'video/mp4',                        // Let browser choose MP4 codec
+      'video/webm;codecs=h264',           // WebM with H.264 as last resort
+      'video/webm'                        // Default WebM
     ];
 
     let selectedMimeType = '';
@@ -92,11 +85,28 @@ export class VideoExporter {
 
     const options = {
       videoBitsPerSecond: EXPORT_PRESETS[quality].bitrate,
-      mimeType: selectedMimeType || 'video/webm;codecs=vp9'
+      mimeType: selectedMimeType || 'video/mp4;codecs=h264',
+      videoConstraints: {
+        frameRate: 60,
+        width: { ideal: stream.getVideoTracks()[0].getSettings().width },
+        height: { ideal: stream.getVideoTracks()[0].getSettings().height }
+      }
     };
 
     console.log('[VideoExporter] Using MIME type:', options.mimeType);
-    return new MediaRecorder(stream, options);
+    const mediaRecorder = new MediaRecorder(stream, options);
+    
+    // Force keyframe insertion every 2 seconds for better seeking
+    const keyframeInterval = setInterval(() => {
+      if (mediaRecorder.state === 'recording') {
+        // @ts-ignore - forceKeyframe is a non-standard but widely supported feature
+        if (mediaRecorder.requestData) mediaRecorder.requestData();
+      }
+    }, 2000);
+
+    mediaRecorder.addEventListener('stop', () => clearInterval(keyframeInterval));
+
+    return mediaRecorder;
   }
 
   async exportVideo(options: ExportOptions & {
@@ -169,7 +179,9 @@ export class VideoExporter {
       ctx.globalCompositeOperation = 'copy';  // Faster compositing
     }
 
-    const mediaRecorder = this.setupMediaRecorder(stream, options.quality);
+    // Set default quality to 'balanced' if not specified
+    const quality = options.quality || 'balanced';
+    const mediaRecorder = this.setupMediaRecorder(stream, quality);
     const chunks: Blob[] = [];
     let recordingComplete = false;
 

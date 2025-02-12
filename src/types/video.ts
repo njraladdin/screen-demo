@@ -1,4 +1,4 @@
-export type ExportQuality = 'original' | 'high' | 'medium' | 'small';
+export type ExportQuality = 'original' | 'balanced';
 export type DimensionPreset = 'original' | '1080p' | '720p';
 
 export interface ZoomKeyframe {
@@ -40,7 +40,7 @@ export interface VideoMetadata {
 }
 
 export interface ExportOptions {
-  quality: ExportQuality;
+  quality?: ExportQuality;
   dimensions: DimensionPreset;
   speed: number;
   video?: HTMLVideoElement;
