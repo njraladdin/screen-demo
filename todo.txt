@@ -11,7 +11,7 @@ simpelr quality options. smaller renderer video size, done
 record in 120, export in 60, done 
 improve mouse smoothness effect, done 
 
-update vidoe track design, add thumbnails, add duration
+update timeline: update vidoe track design, add thumbnails, add duration, done 
 change cursor type depending on acutla cursor type 
 cursor click should be an animated cursor jump
 automatic zooms 
