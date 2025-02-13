@@ -1,9 +1,33 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
-use std::thread;
-use std::fs::File;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use memmap2::Mmap;
+use parking_lot::Mutex as ParkingMutex;
+use rdev::{listen, Event, EventType};
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::env;
+use std::fs::File;
 use std::io::{Read, Seek};
+use std::mem::zeroed;
+use std::sync::atomic::AtomicU16;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::thread;
+use std::time::Instant;
+use tauri::Manager;
+use tiny_http::{Response, Server, StatusCode};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+};
+use windows::Win32::UI::WindowsAndMessaging::GetCursorInfo;
+use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+use windows::Win32::UI::WindowsAndMessaging::CURSORINFO;
+use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, IDC_ARROW, IDC_HAND, IDC_IBEAM};
 use windows_capture::{
     capture::{Context, GraphicsCaptureApiHandler},
     encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder},
@@ -12,35 +36,11 @@ use windows_capture::{
     monitor::Monitor,
     settings::{ColorFormat, CursorCaptureSettings, DrawBorderSettings, Settings},
 };
-use std::sync::Mutex;
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
-use windows::Win32::Foundation::POINT;
-use std::collections::VecDeque;
-use serde::{Serialize, Deserialize};
-use tauri::Manager;
-use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
-};
-use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
-use std::mem::zeroed;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use std::sync::Arc;
-use parking_lot::Mutex as ParkingMutex;
-use memmap2::Mmap;
-use std::sync::atomic::AtomicU16;
-use tiny_http::{Server, Response, StatusCode};
-use windows::Win32::UI::WindowsAndMessaging::GetCursorInfo;
-use windows::Win32::UI::WindowsAndMessaging::CURSORINFO;
-use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, IDC_ARROW, IDC_IBEAM, IDC_HAND};
-use windows::core::PCWSTR;
-use rdev::{listen, Event, EventType};
-use std::sync::mpsc;
-use std::sync::atomic::AtomicU64;
 
 // Global static variables that can be safely accessed from multiple threads
-static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
-static mut VIDEO_PATH: Option<String> = None;  // Stores the path where video will be saved
-static SHOULD_STOP: AtomicBool = AtomicBool::new(false);  // Signals when to stop recording
+static RECORDING: AtomicBool = AtomicBool::new(false); // Tracks if we're currently recording
+static mut VIDEO_PATH: Option<String> = None; // Stores the path where video will be saved
+static SHOULD_STOP: AtomicBool = AtomicBool::new(false); // Signals when to stop recording
 static IS_MOUSE_CLICKED: AtomicBool = AtomicBool::new(false);
 static SHOULD_LISTEN_CLICKS: AtomicBool = AtomicBool::new(false);
 static VIDEO_DATA: Mutex<Option<Vec<u8>>> = Mutex::new(None);
@@ -81,8 +81,8 @@ lazy_static::lazy_static! {
 
 // Main struct that handles the screen capture process
 struct CaptureHandler {
-    encoder: Option<VideoEncoder>,  // Handles video encoding, wrapped in Option to allow taking ownership later
-    start: Instant,  // Tracks when recording started
+    encoder: Option<VideoEncoder>, // Handles video encoding, wrapped in Option to allow taking ownership later
+    start: Instant,                // Tracks when recording started
     last_mouse_capture: Instant,
     frame_count: u32,
     last_frame_time: Instant,
@@ -94,15 +94,21 @@ fn get_cursor_type() -> String {
     unsafe {
         let mut cursor_info: CURSORINFO = std::mem::zeroed();
         cursor_info.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
-        
+
         if GetCursorInfo(&mut cursor_info).as_bool() {
             let current_handle = cursor_info.hCursor.0;
-            
+
             // Load system cursors to get their actual handles
-            let arrow = LoadCursorW(None, PCWSTR(IDC_ARROW.0 as *const u16)).unwrap().0;
-            let ibeam = LoadCursorW(None, PCWSTR(IDC_IBEAM.0 as *const u16)).unwrap().0;
-            let hand = LoadCursorW(None, PCWSTR(IDC_HAND.0 as *const u16)).unwrap().0;
-            
+            let arrow = LoadCursorW(None, PCWSTR(IDC_ARROW.0 as *const u16))
+                .unwrap()
+                .0;
+            let ibeam = LoadCursorW(None, PCWSTR(IDC_IBEAM.0 as *const u16))
+                .unwrap()
+                .0;
+            let hand = LoadCursorW(None, PCWSTR(IDC_HAND.0 as *const u16))
+                .unwrap()
+                .0;
+
             // Compare with actual system cursor handles without logging every check
             match current_handle {
                 h if h == arrow => "default".to_string(),
@@ -119,8 +125,8 @@ fn get_cursor_type() -> String {
 // Implementation of the GraphicsCaptureApiHandler trait for our CaptureHandler
 // This defines how our handler will interact with the Windows screen capture API
 impl GraphicsCaptureApiHandler for CaptureHandler {
-    type Flags = String;  // Type used for passing configuration flags
-    type Error = Box<dyn std::error::Error + Send + Sync>;  // Type used for error handling
+    type Flags = String; // Type used for passing configuration flags
+    type Error = Box<dyn std::error::Error + Send + Sync>; // Type used for error handling
 
     // Called when creating a new capture session
     fn new(ctx: Context<Self::Flags>) -> Result<Self, Self::Error> {
@@ -139,8 +145,11 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         // Create temporary file path for the video
         let temp_dir = env::temp_dir();
-        let video_path = temp_dir.join(format!("screen_recording_{}.mp4", Instant::now().elapsed().as_millis()));
-        
+        let video_path = temp_dir.join(format!(
+            "screen_recording_{}.mp4",
+            Instant::now().elapsed().as_millis()
+        ));
+
         unsafe {
             VIDEO_PATH = Some(video_path.to_string_lossy().to_string());
         }
@@ -154,7 +163,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         let encoder = VideoEncoder::new(
             VideoSettingsBuilder::new(width, height)
                 .frame_rate(120)
-                .bitrate(50_000_000),  // Reduced bitrate for faster processing
+                .bitrate(50_000_000), // Reduced bitrate for faster processing
             AudioSettingsBuilder::default().disabled(true),
             ContainerSettingsBuilder::default(),
             &video_path,
@@ -185,7 +194,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         let now = Instant::now();
         let frame_time = now.duration_since(self.last_frame_time);
-        
+
         // Monitor for potential frame drops (expecting ~16.7ms between frames at 60fps)
         if frame_time.as_millis() > 20 {
             self.dropped_frames += 1;
@@ -197,7 +206,8 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         // Log performance stats every second
         if self.start.elapsed().as_secs() > 0 && self.frame_count % 60 == 0 {
-            println!("Recording stats: frames={}, drops={}, avg_interval={:.1}ms", 
+            println!(
+                "Recording stats: frames={}, drops={}, avg_interval={:.1}ms",
                 self.frame_count,
                 self.dropped_frames,
                 self.start.elapsed().as_millis() as f32 / self.frame_count as f32
@@ -205,19 +215,19 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         }
 
         let current_time = self.start.elapsed();
-        
+
         // Use thread_local for last frame time to avoid unsafe blocks
         thread_local! {
             static LAST_FRAME_TIME: std::cell::RefCell<Option<Instant>> = std::cell::RefCell::new(None);
         }
-        
+
         // Calculate frame delta more safely
         let frame_delta = LAST_FRAME_TIME.with(|last| {
             let mut last = last.borrow_mut();
             let now = Instant::now();
             let delta = match *last {
                 Some(prev) => now.duration_since(prev),
-                None => std::time::Duration::from_millis(16)
+                None => std::time::Duration::from_millis(16),
             };
             *last = Some(now);
             delta
@@ -227,14 +237,15 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         if frame_delta.as_millis() < 20 {
             static mut FRAME_COUNT: u32 = 0;
             static mut LAST_LOG_TIME: Option<Instant> = None;
-            
+
             unsafe {
                 FRAME_COUNT += 1;
-                
+
                 if let Some(last_log) = LAST_LOG_TIME {
                     if last_log.elapsed().as_secs() >= 1 {
                         let fps = FRAME_COUNT as f32;
-                        println!("Capture performance: {:.1} FPS (avg frame interval: {:.1}ms)", 
+                        println!(
+                            "Capture performance: {:.1} FPS (avg frame interval: {:.1}ms)",
                             fps,
                             1000.0 / fps
                         );
@@ -249,14 +260,12 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
 
         // Log any encoding errors with more detail
         if let Err(e) = self.encoder.as_mut().unwrap().send_frame(frame) {
-            println!("Encoding error during frame at {}s: {}", 
+            println!(
+                "Encoding error during frame at {}s: {}",
                 current_time.as_secs_f64(),
                 e
             );
-            println!("Frame details: size={}x{}", 
-                frame.width(), 
-                frame.height()
-            );
+            println!("Frame details: size={}x{}", frame.width(), frame.height());
             return Err(e.into());
         }
 
@@ -266,10 +275,10 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                 let mut point = POINT::default();
                 if GetCursorPos(&mut point).as_bool() {
                     let is_clicked = IS_MOUSE_CLICKED.load(Ordering::SeqCst);
-                    
+
                     // Get cursor type
                     let cursor_type = get_cursor_type();
-                    
+
                     // Log cursor type changes
                     if let Ok(mut last_type) = LAST_CURSOR_TYPE.lock() {
                         if *last_type != cursor_type {
@@ -277,11 +286,11 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                             *last_type = cursor_type.clone();
                         }
                     }
-                    
+
                     // Adjust coordinates relative to the monitor's position
                     let relative_x = point.x - MONITOR_X;
                     let relative_y = point.y - MONITOR_Y;
-                    
+
                     let mouse_pos = MousePosition {
                         x: relative_x,
                         y: relative_y,
@@ -289,7 +298,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                         isClicked: is_clicked,
                         cursor_type,
                     };
-                    
+
                     // Only store positions that are within the monitor bounds
                     if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
                         positions.push_back(mouse_pos);
@@ -345,11 +354,11 @@ extern "system" fn monitor_enum_proc(
 #[tauri::command]
 async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
     println!("Starting monitor enumeration using Win32 API...");
-    
+
     unsafe {
         let mut monitors: Vec<HMONITOR> = Vec::new();
         let monitors_ptr = &mut monitors as *mut Vec<HMONITOR>;
-        
+
         EnumDisplayMonitors(
             HDC::default(),
             None,
@@ -358,22 +367,24 @@ async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
         );
 
         println!("Found {} monitor handles", monitors.len());
-        
+
         let mut monitor_infos = Vec::new();
-        
+
         for (index, &monitor) in monitors.iter().enumerate() {
             let mut monitor_info: MONITORINFOEXW = zeroed();
             monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-            
+
             if GetMonitorInfoW(monitor, &mut monitor_info.monitorInfo as *mut _).as_bool() {
                 let rect = monitor_info.monitorInfo.rcMonitor;
-                println!("Monitor {}: Position ({}, {}), Size {}x{}", 
+                println!(
+                    "Monitor {}: Position ({}, {}), Size {}x{}",
                     index,
-                    rect.left, rect.top,
+                    rect.left,
+                    rect.top,
                     rect.right - rect.left,
                     rect.bottom - rect.top
                 );
-                
+
                 monitor_infos.push(MonitorInfo {
                     id: index.to_string(),
                     name: format!("Display {}", index + 1),
@@ -396,27 +407,27 @@ async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
 // Add this function to clean up resources
 fn cleanup_resources() {
     println!("Cleaning up resources...");
-    
+
     // Clean up any running servers
     if let Ok(mut ports) = SERVER_PORTS.lock() {
         ports.clear();
     }
-    
+
     // First, drop the memory map
     {
         let mut mmap = VIDEO_MMAP.lock();
         *mmap = None;
     }
-    
+
     // Reset all state flags
     RECORDING.store(false, Ordering::SeqCst);
     SHOULD_STOP.store(false, Ordering::SeqCst);
     ENCODING_FINISHED.store(false, Ordering::SeqCst);
     ENCODER_ACTIVE.store(false, Ordering::SeqCst);
-    
+
     // Signal click listener to stop
     SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
-    
+
     println!("Resource cleanup completed");
 }
 
@@ -429,7 +440,7 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
     if RECORDING.load(Ordering::SeqCst) {
         println!("Detected active recording, cleaning up first...");
         SHOULD_STOP.store(true, Ordering::SeqCst);
-        
+
         // Wait a bit for cleanup
         thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -449,7 +460,7 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
             println!("Failed to parse monitor ID: {:?}", e);
             "Invalid monitor ID".to_string()
         })?;
-        
+
         Monitor::from_index(index + 1).map_err(|e| {
             println!("Failed to get monitor from index: {:?}", e);
             e.to_string()
@@ -466,7 +477,7 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
     unsafe {
         let mut monitors: Vec<HMONITOR> = Vec::new();
         let monitors_ptr = &mut monitors as *mut Vec<HMONITOR>;
-        
+
         EnumDisplayMonitors(
             HDC::default(),
             None,
@@ -482,7 +493,7 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
         if let Some(&hmonitor) = monitors.get(monitor_index) {
             let mut monitor_info: MONITORINFOEXW = zeroed();
             monitor_info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-            
+
             if GetMonitorInfoW(hmonitor, &mut monitor_info.monitorInfo as *mut _).as_bool() {
                 let rect = monitor_info.monitorInfo.rcMonitor;
                 MONITOR_X = rect.left;
@@ -524,11 +535,11 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
                         CLICK_LOGGED.store(true, Ordering::SeqCst);
                         println!("Mouse clicked");
                     }
-                },
+                }
                 EventType::ButtonRelease(_) => {
                     IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
                     CLICK_LOGGED.store(false, Ordering::SeqCst);
-                },
+                }
                 _ => {}
             }
         }) {
@@ -558,7 +569,7 @@ async fn get_video_chunk(chunk_index: usize) -> Result<String, String> {
     if let Some(mmap) = VIDEO_MMAP.lock().as_ref() {
         let start = chunk_index * CHUNK_SIZE;
         let end = (start + CHUNK_SIZE).min(mmap.len());
-        
+
         if start >= mmap.len() {
             return Err("Chunk index out of bounds".to_string());
         }
@@ -592,28 +603,24 @@ fn add_cors_headers<R: std::io::Read>(response: &mut Response<R>) {
     };
 
     response.add_header(
-        tiny_http::Header::from_bytes(
-            &b"Access-Control-Allow-Origin"[..],
-            origin.as_bytes(),
-        ).unwrap(),
+        tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], origin.as_bytes())
+            .unwrap(),
     );
     response.add_header(
-        tiny_http::Header::from_bytes(
-            &b"Access-Control-Allow-Methods"[..],
-            &b"GET, OPTIONS"[..],
-        ).unwrap(),
+        tiny_http::Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET, OPTIONS"[..])
+            .unwrap(),
     );
 }
 
 // Modify start_video_server to track ports
 fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Error>> {
     println!("Starting video server for: {}", video_path);
-    
+
     // Clean up old ports first
     if let Ok(mut ports) = SERVER_PORTS.lock() {
         ports.clear();
     }
-    
+
     // Try ports starting from 8000
     let mut port = 8000;
     let server = loop {
@@ -624,7 +631,7 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
                     ports.push(port);
                 }
                 break server;
-            },
+            }
             Err(e) => {
                 println!("Failed to bind port {}: {}", port, e);
                 port += 1;
@@ -634,21 +641,27 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
             }
         }
     };
-    
+
     PORT.store(port, Ordering::SeqCst);
-    
+
     thread::spawn(move || {
         println!("Opening video file...");
-        let file = File::open(&video_path).map_err(|e| {
-            println!("Failed to open video file: {}", e);
-            e
-        }).unwrap();
-        
+        let file = File::open(&video_path)
+            .map_err(|e| {
+                println!("Failed to open video file: {}", e);
+                e
+            })
+            .unwrap();
+
         println!("Getting file metadata...");
-        let file_size = file.metadata().map_err(|e| {
-            println!("Failed to get file metadata: {}", e);
-            e
-        }).unwrap().len();
+        let file_size = file
+            .metadata()
+            .map_err(|e| {
+                println!("Failed to get file metadata: {}", e);
+                e
+            })
+            .unwrap()
+            .len();
         println!("File size: {} bytes", file_size);
 
         for request in server.incoming_requests() {
@@ -657,7 +670,7 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
             if request.method() == &tiny_http::Method::Options {
                 println!("Handling OPTIONS request");
                 let mut response = Response::empty(204);
-                add_cors_headers(&mut response);  // Use the new function
+                add_cors_headers(&mut response); // Use the new function
                 let _ = request.respond(response);
                 continue;
             }
@@ -666,8 +679,12 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
             // Handle range request
             let mut start = 0;
             let mut end = file_size - 1;
-            
-            if let Some(range_header) = request.headers().iter().find(|h| h.field.as_str() == "Range") {
+
+            if let Some(range_header) = request
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str() == "Range")
+            {
                 if let Ok(range_str) = std::str::from_utf8(range_header.value.as_bytes()) {
                     if let Some(range) = range_str.strip_prefix("bytes=") {
                         let parts: Vec<&str> = range.split('-').collect();
@@ -682,21 +699,22 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
             let mut file = file.try_clone().unwrap();
             file.seek(std::io::SeekFrom::Start(start)).unwrap();
             let mut response = Response::new(
-                if start == 0 { StatusCode(200) } else { StatusCode(206) },
+                if start == 0 {
+                    StatusCode(200)
+                } else {
+                    StatusCode(206)
+                },
                 vec![],
                 Box::new(file.take(end - start + 1)),
                 Some((end - start + 1) as usize),
-                None
+                None,
             );
 
-            add_cors_headers(&mut response);  // Use the new function
-            
+            add_cors_headers(&mut response); // Use the new function
+
             // Add content type header
             response.add_header(
-                tiny_http::Header::from_bytes(
-                    &b"Content-Type"[..],
-                    &b"video/mp4"[..],
-                ).unwrap(),
+                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"video/mp4"[..]).unwrap(),
             );
 
             // Add headers...
@@ -705,7 +723,8 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
                     tiny_http::Header::from_bytes(
                         &b"Content-Range"[..],
                         format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
-                    ).unwrap(),
+                    )
+                    .unwrap(),
                 );
             }
 
@@ -721,21 +740,21 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
 // Add this function near the other utility functions
 fn process_cursor_changes(positions: &mut Vec<MousePosition>) {
     const MIN_DURATION_MS: f64 = 100.0;
-    
+
     let mut i = 0;
     while i < positions.len() - 1 {
         let current_type = &positions[i].cursor_type;
         let mut j = i + 1;
-        
+
         while j < positions.len() && positions[j].cursor_type == *current_type {
             j += 1;
         }
 
         // If this cursor type lasted less than MIN_DURATION_MS and we're not at the start
-        let duration = (positions[j-1].timestamp - positions[i].timestamp) * 1000.0;
+        let duration = (positions[j - 1].timestamp - positions[i].timestamp) * 1000.0;
         if duration < MIN_DURATION_MS && i > 0 {
             // Replace the short duration with the previous type
-            let prev_type = positions[i-1].cursor_type.clone();
+            let prev_type = positions[i - 1].cursor_type.clone();
             for pos in positions.iter_mut().take(j).skip(i) {
                 pos.cursor_type = prev_type.clone();
             }
@@ -757,7 +776,7 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
 
     // Signal capture to stop
     SHOULD_STOP.store(true, Ordering::SeqCst);
-    
+
     // Wait for encoder to finish with timeout
     let start = Instant::now();
     while !ENCODING_FINISHED.load(Ordering::SeqCst) {
@@ -795,7 +814,7 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
                 Vec::new()
             };
             Ok((format!("http://localhost:{}", port), mouse_positions))
-        },
+        }
         Err(e) => {
             println!("Server failed to start: {}", e);
             cleanup_resources();
@@ -825,6 +844,7 @@ static mut MONITOR_Y: i32 = 0;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             start_recording,

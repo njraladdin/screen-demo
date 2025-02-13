@@ -1,6 +1,6 @@
 [package]
 name = "screen-demo"
-version = "0.1.2"
+version = "0.1.5"
 description = "A lightweight screen recording and editing tool with zoom animations, cursor tracking, and background customization"
 authors = ["you"]
 edition = "2021"
@@ -36,3 +36,6 @@ base64 = "0.21.5"
 parking_lot = "0.12.1"
 memmap2 = "0.5.10"
 tiny_http = "0.12"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

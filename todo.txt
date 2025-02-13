@@ -17,10 +17,7 @@ filter out very small cursor changes that happens when moving mouse, done
 animate cursor click, done 
 background should not be fixed, it should also get zoomed in, done 
 upload custom background image, done 
-
-
-
-automatic zooms 
+automatic zooms, done 
 
 
 way for users to update software version 
