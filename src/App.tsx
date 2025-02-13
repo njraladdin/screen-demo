@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen, Upload } from "lucide-react";
+import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen, Upload, Wand2 } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
 import { videoRenderer } from '@/lib/videoRenderer';
@@ -9,6 +9,7 @@ import { videoExporter, EXPORT_PRESETS, DIMENSION_PRESETS } from '@/lib/videoExp
 import { createVideoController } from '@/lib/videoController';
 import logo from '@/assets/logo.svg';
 import { projectManager } from '@/lib/projectManager';
+import { autoZoomGenerator } from '@/lib/autoZoom';
 
 // Replace the debounce utility with throttle
 const useThrottle = (callback: Function, limit: number) => {
@@ -1501,17 +1502,48 @@ function App() {
             <div className="space-y-2 mb-8">
               <div className="flex justify-between items-center">
                 <h2 className="text-lg font-semibold text-[#d7dadc]">Timeline</h2>
-                <Button 
-                  onClick={() => {handleAddKeyframe(); setActivePanel('zoom');}} 
-                  disabled={isProcessing || !currentVideo} 
-                  className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
-                    !currentVideo || isProcessing 
-                      ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed' 
-                      : 'bg-[#0079d3] hover:bg-[#0079d3]/90 text-white shadow-sm'
-                  }`}
-                >
-                  <Plus className="w-4 h-4 mr-2" />Add Zoom at Playhead
-                </Button>
+                <div className="flex gap-2">
+                  <Button 
+                    onClick={() => {
+                      if (!segment || !mousePositions.length) return;
+                      
+                      // Generate auto zoom keyframes
+                      const newKeyframes = autoZoomGenerator.generateZooms(segment, mousePositions);
+                      
+                      // Merge with existing keyframes and sort by time
+                      const allKeyframes = [...segment.zoomKeyframes, ...newKeyframes]
+                        .sort((a, b) => a.time - b.time);
+                      
+                      // Update segment
+                      setSegment({
+                        ...segment,
+                        zoomKeyframes: allKeyframes
+                      });
+                      
+                      // Switch to zoom panel
+                      setActivePanel('zoom');
+                    }} 
+                    disabled={isProcessing || !currentVideo || !mousePositions.length} 
+                    className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
+                      !currentVideo || isProcessing || !mousePositions.length
+                        ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed' 
+                        : 'bg-[#0079d3] hover:bg-[#0079d3]/90 text-white shadow-sm'
+                    }`}
+                  >
+                    <Wand2 className="w-4 h-4 mr-2" />Auto-Add Zooms
+                  </Button>
+                  <Button 
+                    onClick={() => {handleAddKeyframe(); setActivePanel('zoom');}} 
+                    disabled={isProcessing || !currentVideo} 
+                    className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
+                      !currentVideo || isProcessing 
+                        ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed' 
+                        : 'bg-[#0079d3] hover:bg-[#0079d3]/90 text-white shadow-sm'
+                    }`}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />Add Zoom at Playhead
+                  </Button>
+                </div>
               </div>
               <p className="text-sm text-[#818384]">
                 Drag handles to trim video length

@@ -24,3 +24,11 @@ automatic zooms
 
 
 way for users to update software version 
+
+
+
+----
+
+Display keystrokes and keyboard shortcuts on screen
+add text 
+record audio, trim audio 
