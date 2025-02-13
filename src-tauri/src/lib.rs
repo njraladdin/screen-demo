@@ -414,6 +414,9 @@ fn cleanup_resources() {
     ENCODING_FINISHED.store(false, Ordering::SeqCst);
     ENCODER_ACTIVE.store(false, Ordering::SeqCst);
     
+    // Signal click listener to stop
+    SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
+    
     println!("Resource cleanup completed");
 }
 
@@ -506,33 +509,30 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
     // Signal that we should start listening for clicks
     SHOULD_LISTEN_CLICKS.store(true, Ordering::SeqCst);
 
-    // Create a channel for mouse events
-    let (tx, rx) = mpsc::channel();
-    
-    // Clone the transmitter for the callback
-    let tx_clone = tx.clone();
-    
     // Spawn mouse listener thread
     thread::spawn(move || {
         if let Err(error) = listen(move |event| {
+            // Check if we should continue listening
+            if !SHOULD_LISTEN_CLICKS.load(Ordering::SeqCst) {
+                return;
+            }
+
             match event.event_type {
                 EventType::ButtonPress(_) => {
                     if !CLICK_LOGGED.load(Ordering::SeqCst) {
                         IS_MOUSE_CLICKED.store(true, Ordering::SeqCst);
                         CLICK_LOGGED.store(true, Ordering::SeqCst);
-                        println!("Mouse clicked");  // Debug log only once per click
-                        let _ = tx_clone.send(true);
+                        println!("Mouse clicked");
                     }
                 },
                 EventType::ButtonRelease(_) => {
                     IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
                     CLICK_LOGGED.store(false, Ordering::SeqCst);
-                    let _ = tx_clone.send(false);
                 },
                 _ => {}
             }
         }) {
-            println!("Error setting up mouse listener: {:?}", error);
+            println!("Error in mouse listener: {:?}", error);
         }
     });
 
