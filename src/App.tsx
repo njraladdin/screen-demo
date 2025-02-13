@@ -235,6 +235,7 @@ function App() {
       setEditingKeyframeId(null);
       setIsDraggingTrimStart(false);
       setIsDraggingTrimEnd(false);
+      setThumbnails([]);
 
       // Clear previous video
       if (currentVideo) {
@@ -278,6 +279,7 @@ function App() {
       setIsLoadingVideo(true);
       setIsVideoReady(false);
       setLoadingProgress(0);
+      setThumbnails([]);
 
       const [videoUrl, mouseData] = await invoke<[string, MousePosition[]]>("stop_recording");
       setMousePositions(mouseData);
@@ -327,6 +329,7 @@ function App() {
           setIsVideoReady(true);
           setIsLoadingVideo(false);
           setLoadingProgress(100);
+          generateThumbnails();
         };
 
         video.addEventListener('canplaythrough', handleCanPlayThrough);
@@ -433,7 +436,7 @@ function App() {
     };
   }, [segment, isPlaying]);
 
-  // Modify existing handleTimelineClick
+  // Update the handleTimelineClick function
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isDraggingTrimStart || isDraggingTrimEnd) return;
 
@@ -442,22 +445,14 @@ function App() {
     if (!timeline || !video || !segment) return;
 
     const rect = timeline.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    // Remove the margin adjustments since the track now spans the full width
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
     const percent = x / rect.width;
     const newTime = percent * duration;
 
-    console.log('[Timeline] Click seek:', {
-      percent,
-      newTime,
-      currentTime: video.currentTime,
-      duration
-    });
-
+    // Only allow seeking within trimmed bounds
     if (newTime >= segment.trimStart && newTime <= segment.trimEnd) {
-      // Use the video controller instead of directly setting currentTime
       videoControllerRef.current?.seek(newTime);
-      
-      // Add a small delay before setting current time in state
       requestAnimationFrame(() => {
         setCurrentTime(newTime);
       });
@@ -808,10 +803,11 @@ function App() {
     const project = await projectManager.loadProject(projectId);
     if (!project) return;
 
-    // Clear previous video
+    // Clear previous video and thumbnails
     if (currentVideo) {
       URL.revokeObjectURL(currentVideo);
     }
+    setThumbnails([]);
 
     // Set up new video
     const videoUrl = URL.createObjectURL(project.videoBlob);
@@ -825,6 +821,57 @@ function App() {
     // Update video controller
     videoControllerRef.current?.handleVideoSourceChange(videoUrl);
   };
+
+  // Add these states in App component
+  const [thumbnails, setThumbnails] = useState<string[]>([]);
+  const thumbnailCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
+
+  // Add this new ref for the thumbnail video
+  const thumbnailVideoRef = useRef<HTMLVideoElement>(null);
+
+  // Update the generateThumbnails function
+  const generateThumbnails = useCallback(async () => {
+    if (!currentVideo || !duration || !segment) return;
+
+    const thumbnailVideo = thumbnailVideoRef.current;
+    if (!thumbnailVideo) return;
+
+    thumbnailVideo.src = currentVideo;
+    thumbnailVideo.muted = true;
+
+    const canvas = thumbnailCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = 160;
+    canvas.height = 90;
+
+    await new Promise(r => thumbnailVideo.addEventListener('loadeddata', r, { once: true }));
+
+    // Generate 20 thumbnails evenly spread across the trimmed duration
+    const numThumbnails = 20;
+    const trimmedDuration = segment.trimEnd - segment.trimStart;
+    const interval = trimmedDuration / numThumbnails;
+    const newThumbnails: string[] = [];
+
+    for (let i = 0; i < numThumbnails; i++) {
+      const time = segment.trimStart + (i * interval);
+      thumbnailVideo.currentTime = time;
+      await new Promise(r => thumbnailVideo.addEventListener('seeked', r, { once: true }));
+      ctx.drawImage(thumbnailVideo, 0, 0, canvas.width, canvas.height);
+      newThumbnails.push(canvas.toDataURL('image/jpeg', 0.5));
+    }
+
+    setThumbnails(newThumbnails);
+    thumbnailVideo.src = ''; // Clean up
+  }, [currentVideo, duration, segment]);
+
+  // Add this effect
+  useEffect(() => {
+    if (isVideoReady && duration > 0 && thumbnails.length === 0) {
+      generateThumbnails();
+    }
+  }, [isVideoReady, duration, generateThumbnails]);
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
@@ -1126,7 +1173,8 @@ function App() {
               </Button>
             </div>
 
-            <div className="relative h-32">
+            <div className="relative h-40">
+              {/* Time markers */}
               <div className="absolute w-full flex justify-between text-xs text-[#d7dadc] z-40 pointer-events-none">
                 {Array.from({ length: 11 }).map((_, i) => {
                   const time = (duration * i) / 10;
@@ -1139,90 +1187,110 @@ function App() {
                 })}
               </div>
 
-              <div ref={timelineRef} className="h-12 bg-[#272729] rounded-lg cursor-pointer relative mt-8" onClick={handleTimelineClick} onMouseMove={handleTrimDrag} onMouseUp={() => {setIsDraggingTrimStart(false); setIsDraggingTrimEnd(false);}} onMouseLeave={() => {setIsDraggingTrimStart(false); setIsDraggingTrimEnd(false);}}>
+              {/* Timeline content */}
+              <div ref={timelineRef} 
+                className="h-24 bg-[#1a1a1b] rounded-lg cursor-pointer relative mt-8"
+                onClick={handleTimelineClick} 
+                onMouseMove={handleTrimDrag} 
+                onMouseUp={() => {setIsDraggingTrimStart(false); setIsDraggingTrimEnd(false);}} 
+                onMouseLeave={() => {setIsDraggingTrimStart(false); setIsDraggingTrimEnd(false);}}
+              >
+                {/* Main video track */}
                 {segment && (
-                  <>
-                    <div className="absolute top-0 bottom-0 bg-black/50" style={{left: 0, width: `${(segment.trimStart / duration) * 100}%`}} />
-                    <div className="absolute top-0 bottom-0 bg-black/50" style={{right: 0, width: `${((duration - segment.trimEnd) / duration) * 100}%`}} />
-                  </>
-                )}
-
-                {segment && (
-                  <>
-                    <div className="absolute top-0 bottom-0 w-1 bg-[#d7dadc] cursor-col-resize z-30 hover:bg-[#0079d3]" style={{left: `${(segment.trimStart / duration) * 100}%`}} onMouseDown={() => setIsDraggingTrimStart(true)} />
-                    <div className="absolute top-0 bottom-0 w-1 bg-[#d7dadc] cursor-col-resize z-30 hover:bg-[#0079d3]" style={{left: `${(segment.trimEnd / duration) * 100}%`}} onMouseDown={() => setIsDraggingTrimEnd(true)} />
-                  </>
-                )}
-
-                {segment && (
-                  <>
-                    {segment.zoomKeyframes.map((keyframe, index) => {
-                      const active = editingKeyframeId === index;
-                      // Use the helper to calculate the keyframe range
-                      const { rangeStart, rangeEnd } = getKeyframeRange(segment.zoomKeyframes, index);
-
-                      return (
-                        <div key={index}>
-                          <div
-                            className={`absolute h-full cursor-pointer transition-colors border-r border-[#0079d3] ${
-                              active ? "opacity-100" : "opacity-80"
-                            }`}
-                            style={{
-                              left: `${(rangeStart / duration) * 100}%`,
-                              width: `${((rangeEnd - rangeStart) / duration) * 100}%`,
-                              zIndex: 20,
-                              background: `linear-gradient(90deg, rgba(0, 121, 211, 0.1) 0%, rgba(0, 121, 211, ${
-                                0.1 + (keyframe.zoomFactor - 1) * 0.3
-                              }) 100%)`
+                  <div className="absolute h-8 inset-x-0 bottom-0">
+                    {/* Background track */}
+                    <div className="absolute inset-0 bg-[#272729] rounded-lg overflow-hidden">
+                      {/* Thumbnails inside track */}
+                      <div className="absolute inset-0 flex gap-[2px]">
+                        {thumbnails.map((thumbnail, index) => (
+                          <div 
+                            key={index}
+                            className="h-full flex-shrink-0"
+                            style={{ 
+                              width: `calc(${100 / thumbnails.length}% - 2px)`,
+                              backgroundImage: `url(${thumbnail})`,
+                              backgroundSize: 'cover',
+                              backgroundPosition: 'center',
+                              opacity: 0.5
                             }}
                           />
-                          <div
-                            className="absolute cursor-pointer group"
-                            style={{
-                              left: `${(keyframe.time / duration) * 100}%`,
-                              transform: "translateX(-50%)",
-                              top: "-32px",
-                              height: "56px"
-                            }}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (videoRef.current) {
-                                videoRef.current.currentTime = keyframe.time;
-                                setCurrentTime(keyframe.time);
-                                setEditingKeyframeId(index);
-                                setActivePanel("zoom");
-                              }
-                            }}
-                          >
-                            <div className="relative flex flex-col items-center">
-                              <div
-                                className={`px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap ${
-                                  active ? "bg-[#0079d3] text-white" : "bg-[#0079d3]/20 text-[#0079d3]"
-                                }`}
-                              >
-                                {Math.round((keyframe.zoomFactor - 1) * 100)}%
-                              </div>
-                              <div
-                                className={`w-3 h-3 bg-[#0079d3] rounded-full hover:scale-125 transition-transform ${
-                                  active ? "ring-2 ring-white" : ""
-                                }`}
-                              />
-                              <div className="w-[1px] h-10 bg-[#0079d3]/30 group-hover:bg-[#0079d3]/50" />
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Trimmed sections (dark overlay) */}
+                    <div 
+                      className="absolute inset-y-0 left-0 bg-black/50 rounded-l-lg" 
+                      style={{
+                        width: `${(segment.trimStart / duration) * 100}%`
+                      }} 
+                    />
+                    <div 
+                      className="absolute inset-y-0 right-0 bg-black/50 rounded-r-lg" 
+                      style={{
+                        width: `${((duration - segment.trimEnd) / duration) * 100}%`
+                      }} 
+                    />
+
+                    {/* Active section */}
+                    <div 
+                      className="absolute inset-y-0 bg-white/5"
+                      style={{
+                        left: `${(segment.trimStart / duration) * 100}%`,
+                        right: `${((duration - segment.trimEnd) / duration) * 100}%`
+                      }}
+                    />
+
+                    {/* Trim handles - now attached to the track */}
+                    <div 
+                      className="absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-12 cursor-col-resize z-30 group"
+                      style={{
+                        left: `${(segment.trimStart / duration) * 100}%`
+                      }} 
+                      onMouseDown={() => setIsDraggingTrimStart(true)}
+                    >
+                      <div className="absolute inset-y-0 w-1 bg-white/80 group-hover:bg-[#0079d3] rounded-full left-1/2 transform -translate-x-1/2" />
+                      <div className="absolute inset-y-2 left-1/2 transform -translate-x-1/2 flex flex-col justify-center gap-1">
+                        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
+                        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
+                      </div>
+                    </div>
+
+                    <div 
+                      className="absolute -right-1 top-1/2 -translate-y-1/2 w-2 h-12 cursor-col-resize z-30 group"
+                      style={{
+                        left: `${(segment.trimEnd / duration) * 100}%`
+                      }} 
+                      onMouseDown={() => setIsDraggingTrimEnd(true)}
+                    >
+                      <div className="absolute inset-y-0 w-1 bg-white/80 group-hover:bg-[#0079d3] rounded-full left-1/2 transform -translate-x-1/2" />
+                      <div className="absolute inset-y-2 left-1/2 transform -translate-x-1/2 flex flex-col justify-center gap-1">
+                        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
+                        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
+                      </div>
+                    </div>
+                  </div>
                 )}
 
-                <div className="absolute top-[-16px] bottom-0 flex flex-col items-center pointer-events-none z-30" style={{left: `${(currentTime / duration) * 100}%`, transform: 'translateX(-50%)'}}>
+                {/* Playhead */}
+                <div 
+                  className="absolute top-0 bottom-0 flex flex-col items-center pointer-events-none z-30" 
+                  style={{
+                    left: `${(currentTime / duration) * 100}%`, 
+                    transform: 'translateX(-50%)'
+                  }}
+                >
                   <div className={`w-4 h-3 ${!currentVideo ? 'bg-gray-600' : 'bg-red-500'} rounded-t`} />
                   <div className={`w-0.5 flex-1 ${!currentVideo ? 'bg-gray-600' : 'bg-red-500'}`} />
                 </div>
               </div>
 
-              <div className="text-center font-mono text-sm text-[#818384] mt-4">{formatTime(currentTime)} / {formatTime(duration)}</div>
+              {/* Current time display */}
+              <div className="text-center font-mono text-sm mt-4">
+                <span className="text-[#d7dadc] font-medium">
+                  {segment ? formatTime(segment.trimEnd - segment.trimStart) : formatTime(duration)}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -1377,8 +1445,7 @@ function App() {
                         style={{
                           background: `linear-gradient(to right, 
                             #818384 0%, 
-                            #0079d3 ${((exportOptions.speed * 100 - 50) / 150) * 100}%, 
-                            #272729 ${((exportOptions.speed * 100 - 50) / 150) * 100}%)`
+                            #0079d3 ${((exportOptions.speed * 100 - 50) / 150) * 100}%`
                         }}
                       />
                     </div>
@@ -1495,6 +1562,15 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Add this near your other video element */}
+      <video 
+        ref={thumbnailVideoRef}
+        className="hidden"
+        playsInline
+        preload="auto"
+        crossOrigin="anonymous"
+      />
     </div>
   );
 }
