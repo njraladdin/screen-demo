@@ -130,7 +130,6 @@ const Timeline: React.FC<TimelineProps> = ({
                       setActivePanel("zoom");
                     }
                   }}
-                  videoRef={videoRef}
                 />
               </div>
 
@@ -225,8 +224,7 @@ const ZoomKeyframes: React.FC<{
   duration: number;
   editingKeyframeId: number | null;
   onKeyframeClick: (time: number, index: number) => void;
-  videoRef: React.RefObject<HTMLVideoElement>;
-}> = ({ segment, duration, editingKeyframeId, onKeyframeClick, videoRef }) => (
+}> = ({ segment, duration, editingKeyframeId, onKeyframeClick }) => (
   <div className="absolute inset-x-0 h-full">
     {segment.zoomKeyframes.map((keyframe, index) => {
       const active = editingKeyframeId === index;

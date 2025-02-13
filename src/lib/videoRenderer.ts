@@ -241,7 +241,10 @@ export class VideoRenderer {
 
         // Mouse cursor
         const cursorStart = performance.now();
-        const interpolatedPosition = this.interpolateCursorPosition(video.currentTime, mousePositions, backgroundConfig);
+        const interpolatedPosition = this.interpolateCursorPosition(
+          video.currentTime, 
+          mousePositions
+        );
         if (interpolatedPosition) {
             // Save current transform
             ctx.save();
@@ -541,8 +544,7 @@ export class VideoRenderer {
     if (positions.length < 4) return positions;
 
     const smoothed: MousePosition[] = [];
-    const timeStep = 1 / targetFps;
-
+    
     // First pass: Catmull-Rom interpolation
     for (let i = 0; i < positions.length - 3; i++) {
       const p0 = positions[i];
@@ -639,7 +641,6 @@ export class VideoRenderer {
   private interpolateCursorPosition(
     currentTime: number,
     mousePositions: MousePosition[],
-    backgroundConfig: BackgroundConfig
   ): { x: number; y: number; isClicked: boolean; cursor_type: string } | null {
     if (mousePositions.length === 0) return null;
 
