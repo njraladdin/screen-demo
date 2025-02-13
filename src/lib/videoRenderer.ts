@@ -38,6 +38,8 @@ export class VideoRenderer {
   private readonly FRAME_INTERVAL = 1000 / 120; // Increase to 120fps for smoother animation
   private backgroundConfig: BackgroundConfig | null = null;
   private pointerImage: HTMLImageElement;
+  private customBackgroundPattern: CanvasPattern | null = null;
+  private lastCustomBackground: string | undefined = undefined;
 
   private readonly DEFAULT_STATE: ZoomKeyframe = {
     time: 0,
@@ -151,7 +153,11 @@ export class VideoRenderer {
         }
 
         // Draw background first
-        ctx.fillStyle = this.getBackgroundStyle(ctx, backgroundConfig.backgroundType);
+        ctx.fillStyle = this.getBackgroundStyle(
+          ctx, 
+          backgroundConfig.backgroundType,
+          backgroundConfig.customBackground
+        );
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         // Setup temporary canvas for rounded corners and shadows
@@ -306,8 +312,9 @@ export class VideoRenderer {
 
   private getBackgroundStyle(
     ctx: CanvasRenderingContext2D, 
-    type: BackgroundConfig['backgroundType']
-  ): string | CanvasGradient {
+    type: BackgroundConfig['backgroundType'],
+    customBackground?: string
+  ): string | CanvasGradient | CanvasPattern {
     switch (type) {
       case 'gradient1': {
         // Blue to violet gradient
@@ -329,6 +336,64 @@ export class VideoRenderer {
         gradient.addColorStop(0, '#10b981'); // emerald-500
         gradient.addColorStop(1, '#2dd4bf'); // teal-400
         return gradient;
+      }
+      case 'custom': {
+        if (customBackground) {
+          // Only create new pattern if background changed
+          if (this.lastCustomBackground !== customBackground || !this.customBackgroundPattern) {
+            const img = new Image();
+            img.src = customBackground;
+            
+            if (img.complete) {
+              // Create a temporary canvas for scaling the background
+              const tempCanvas = document.createElement('canvas');
+              const tempCtx = tempCanvas.getContext('2d');
+              
+              if (tempCtx) {
+                // Scale the image to a reasonable size (e.g., viewport width)
+                const targetWidth = Math.min(1920, window.innerWidth);
+                const scale = targetWidth / img.width;
+                const targetHeight = img.height * scale;
+                
+                tempCanvas.width = targetWidth;
+                tempCanvas.height = targetHeight;
+                
+                // Use better quality settings
+                tempCtx.imageSmoothingEnabled = true;
+                tempCtx.imageSmoothingQuality = 'high';
+                
+                // Draw scaled image
+                tempCtx.drawImage(img, 0, 0, targetWidth, targetHeight);
+                
+                // Create pattern from scaled image
+                this.customBackgroundPattern = ctx.createPattern(tempCanvas, 'repeat');
+                this.lastCustomBackground = customBackground;
+                
+                // Clean up
+                tempCanvas.remove();
+              }
+            }
+          }
+          
+          if (this.customBackgroundPattern) {
+            // Reset pattern transform
+            this.customBackgroundPattern.setTransform(new DOMMatrix());
+            
+            // Calculate scale to maintain aspect ratio
+            const scale = Math.max(
+              ctx.canvas.width / window.innerWidth,
+              ctx.canvas.height / window.innerHeight
+            ) * 1.1; // Slightly larger to avoid gaps
+            
+            // Apply transform to pattern
+            const matrix = new DOMMatrix()
+              .scale(scale);
+            this.customBackgroundPattern.setTransform(matrix);
+            
+            return this.customBackgroundPattern;
+          }
+        }
+        return '#000000'; // Fallback
       }
       case 'solid': {
         // Create a subtle dark gradient

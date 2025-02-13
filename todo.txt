@@ -15,10 +15,10 @@ update timeline: update vidoe track design, add thumbnails, add duration, done
 change cursor type depending on actual cursor type, done    
 filter out very small cursor changes that happens when moving mouse, done 
 animate cursor click, done 
+background should not be fixed, it should also get zoomed in, done 
 
+upload custom background image, done 
 
-
-background should not be fixed, it should also get zoomed in 
 
 
 automatic zooms 

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen } from "lucide-react";
+import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen, Upload } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
 import { videoRenderer } from '@/lib/videoRenderer';
@@ -1144,6 +1144,33 @@ function App() {
     }
   }, [isVideoReady, duration, generateThumbnails]);
 
+  // Add this state near the top of App component
+  const [recentUploads, setRecentUploads] = useState<string[]>([]);
+
+  // Update handleBackgroundUpload function
+  const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const imageUrl = event.target?.result as string;
+        // Update background config
+        setBackgroundConfig(prev => ({
+          ...prev,
+          backgroundType: 'custom',
+          customBackground: imageUrl
+        }));
+        
+        // Update recent uploads (keep last 3)
+        setRecentUploads(prev => {
+          const newUploads = [imageUrl, ...prev].slice(0, 3);
+          return newUploads;
+        });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
       <header className="bg-[#1a1a1b] border-b border-[#343536]">
@@ -1371,18 +1398,60 @@ function App() {
                       />
                     </div>
                     <div>
-                      <label className="text-sm font-medium text-[#d7dadc] mb-3">Background Style</label>
-                      <div className="grid grid-cols-4 gap-2">
+                      <label className="text-sm font-medium text-[#d7dadc] mb-3 block">Background Style</label>
+                      <div className="grid grid-cols-4 gap-4">
                         {Object.entries(GRADIENT_PRESETS).map(([key, gradient]) => (
                           <button 
                             key={key} 
                             onClick={() => setBackgroundConfig(prev => ({...prev, backgroundType: key as BackgroundConfig['backgroundType']}))} 
-                            className={`aspect-square h-10 rounded-lg transition-all ${gradient} ${  // Changed from h-14 to h-10 and added aspect-square
+                            className={`aspect-square  h-10 rounded-lg transition-all ${gradient} ${
                               backgroundConfig.backgroundType === key 
                                 ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' 
                                 : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'
                             }`} 
                           />
+                        ))}
+                        
+                        {/* Upload button - always first */}
+                        <label 
+                          className={`aspect-square h-10 rounded-lg transition-all cursor-pointer
+                            ring-1 ring-[#343536] hover:ring-[#0079d3]/50
+                            relative overflow-hidden group bg-[#272729]
+                          `}
+                        >
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={handleBackgroundUpload}
+                            className="hidden"
+                          />
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <Upload className="w-5 h-5 text-[#818384] group-hover:text-[#0079d3] transition-colors" />
+                          </div>
+                        </label>
+
+                        {/* Recent uploads */}
+                        {recentUploads.map((imageUrl, index) => (
+                          <button
+                            key={index}
+                            onClick={() => setBackgroundConfig(prev => ({
+                              ...prev,
+                              backgroundType: 'custom',
+                              customBackground: imageUrl
+                            }))}
+                            className={`aspect-square h-10 rounded-lg transition-all relative overflow-hidden
+                              ${backgroundConfig.backgroundType === 'custom' && backgroundConfig.customBackground === imageUrl
+                                ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' 
+                                : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'
+                              }
+                            `}
+                          >
+                            <img 
+                              src={imageUrl} 
+                              alt={`Upload ${index + 1}`}
+                              className="absolute inset-0 w-full h-full object-cover"
+                            />
+                          </button>
                         ))}
                       </div>
                     </div>

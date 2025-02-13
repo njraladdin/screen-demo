@@ -19,10 +19,11 @@ export interface VideoSegment {
 export interface BackgroundConfig {
   scale: number;
   borderRadius: number;
-  backgroundType: 'solid' | 'gradient1' | 'gradient2' | 'gradient3';
+  backgroundType: 'solid' | 'gradient1' | 'gradient2' | 'gradient3' | 'custom';
+  shadow?: number;
   cursorScale?: number;
   cursorSmoothness?: number;
-  shadow?: number;
+  customBackground?: string;
 }
 
 export interface MousePosition {
