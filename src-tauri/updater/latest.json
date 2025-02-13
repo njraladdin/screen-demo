@@ -1,0 +1,11 @@
+{
+  "version": "0.1.5",
+  "notes": "# Screen Demo v0.1.5 - Auto Zooms Update\n\n## New Features\n- Added automatic zooms\n- Added project save/load\n- Timeline updates:\n  - New video track design\n  - Added thumbnails\n  - Added duration display\n- Cursor improvements:\n  - Added click animation\n  - Added motion blur\n  - Dynamic cursor type matching system cursor\n  - Improved smoothness\n  - Filtered small cursor movements\n- Video recording improvements:\n  - 120 FPS recording, 60 FPS export\n  - Increased bitrate to 50Mbps\n- Added custom background image upload\n- Fixed background to zoom with content\n- Added speed percentage in export\n- Simplified quality options with smaller render size\n- Added software update system",
+  "pub_date": "2024-03-21T19:25:57Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVURzRDVFVBWG5XbG11OHQwbmZSaWFIR3JmaUJiTThxd0FhRlBzZHUxdmU3WTU0WWdHaytHVmhhWjYrOXdoQ3VaTW9WWWQwVWdJaDJjVDg0b3h0bXBWek45S2YyZjNZTWdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzM5NDczMzIzCWZpbGU6c2NyZWVuLWRlbW9fMC4xLjVfeDY0LXNldHVwLmV4ZQoyQ0xlWWFkQlBLNE84Q1dTYTFpOTFIVHJEL2l2ZXZkb3VGdmZ6MTJ2UGlXVk9Lb2JVc2c4U3pZQUQ3UVdYVGhIMTZkTlRCZ1JVVGZFa3cvVlo3U0tEQT09Cg==",
+      "url": "https://github.com/njraladdin/screen-demo/releases/download/v0.1.5/screen-demo_0.1.5_x64-setup.exe"
+    }
+  }
+} 

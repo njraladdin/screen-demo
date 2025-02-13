@@ -1,0 +1,12 @@
+-generate signature (only once): 
+npm run tauri signer generate -- -w ~/.tauri/screen-demo.key
+
+-build:
+cargo tauri build
+
+
+-get signature: 
+cargo tauri signer sign -k ~/.tauri/screen-demo.key src-tauri/target/release/bundle/nsis/screen-demo_0.1.5_x64-setup.exe
+
+-update updater/latest.json
+
