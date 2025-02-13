@@ -163,47 +163,77 @@ export class VideoRenderer {
         // Setup temporary canvas for rounded corners and shadows
         tempCanvas.width = canvas.width;
         tempCanvas.height = canvas.height;
-        const tempCtx = tempCanvas.getContext('2d');
+        const tempCtx = tempCanvas.getContext('2d', {
+            alpha: true,
+            willReadFrequently: false
+        });
         if (!tempCtx) return;
 
         // Clear temp canvas
         tempCtx.clearRect(0, 0, canvas.width, canvas.height);
-
+        
         // Draw video frame with rounded corners to temp canvas
         tempCtx.save();
         
-        // Create rounded rectangle path
+        // Improve anti-aliasing
+        tempCtx.imageSmoothingEnabled = true;
+        tempCtx.imageSmoothingQuality = 'high';
+
+        // Create path for the rounded rectangle
         const radius = backgroundConfig.borderRadius;
-        tempCtx.beginPath();
-        tempCtx.moveTo(x + radius, y);
-        tempCtx.lineTo(x + scaledWidth - radius, y);
-        tempCtx.quadraticCurveTo(x + scaledWidth, y, x + scaledWidth, y + radius);
-        tempCtx.lineTo(x + scaledWidth, y + scaledHeight - radius);
-        tempCtx.quadraticCurveTo(x + scaledWidth, y + scaledHeight, x + scaledWidth - radius, y + scaledHeight);
-        tempCtx.lineTo(x + radius, y + scaledHeight);
-        tempCtx.quadraticCurveTo(x, y + scaledHeight, x, y + scaledHeight - radius);
-        tempCtx.lineTo(x, y + radius);
-        tempCtx.quadraticCurveTo(x, y, x + radius, y);
-        tempCtx.closePath();
+        const offset = 0.5;
 
-        // Fill white first to create the shape
-        tempCtx.fillStyle = 'white';
-        tempCtx.fill();
-
-        // Add shadow before clipping
+        // Draw shadow first if enabled
         if (backgroundConfig.shadow) {
-            tempCtx.shadowColor = 'rgba(0, 0, 0, 0.3)';
+            tempCtx.save();
+            
+            // Set shadow properties
+            tempCtx.shadowColor = 'rgba(0, 0, 0, 0.5)';
             tempCtx.shadowBlur = backgroundConfig.shadow;
             tempCtx.shadowOffsetY = backgroundConfig.shadow * 0.5;
+            
+            // Create the rounded rectangle path
+            tempCtx.beginPath();
+            tempCtx.moveTo(x + radius + offset, y + offset);
+            tempCtx.lineTo(x + scaledWidth - radius - offset, y + offset);
+            tempCtx.quadraticCurveTo(x + scaledWidth - offset, y + offset, x + scaledWidth - offset, y + radius + offset);
+            tempCtx.lineTo(x + scaledWidth - offset, y + scaledHeight - radius - offset);
+            tempCtx.quadraticCurveTo(x + scaledWidth - offset, y + scaledHeight - offset, x + scaledWidth - radius - offset, y + scaledHeight - offset);
+            tempCtx.lineTo(x + radius + offset, y + scaledHeight - offset);
+            tempCtx.quadraticCurveTo(x + offset, y + scaledHeight - offset, x + offset, y + scaledHeight - radius - offset);
+            tempCtx.lineTo(x + offset, y + radius + offset);
+            tempCtx.quadraticCurveTo(x + offset, y + offset, x + radius + offset, y + offset);
+            tempCtx.closePath();
+            
+            // Fill with white to create shadow
+            tempCtx.fillStyle = '#fff';
             tempCtx.fill();
-            tempCtx.shadowColor = 'transparent';
-            tempCtx.shadowBlur = 0;
-            tempCtx.shadowOffsetY = 0;
+            
+            tempCtx.restore();
         }
 
-        // Now clip and draw video
+        // Now draw the actual video content
+        tempCtx.beginPath();
+        tempCtx.moveTo(x + radius + offset, y + offset);
+        tempCtx.lineTo(x + scaledWidth - radius - offset, y + offset);
+        tempCtx.quadraticCurveTo(x + scaledWidth - offset, y + offset, x + scaledWidth - offset, y + radius + offset);
+        tempCtx.lineTo(x + scaledWidth - offset, y + scaledHeight - radius - offset);
+        tempCtx.quadraticCurveTo(x + scaledWidth - offset, y + scaledHeight - offset, x + scaledWidth - radius - offset, y + scaledHeight - offset);
+        tempCtx.lineTo(x + radius + offset, y + scaledHeight - offset);
+        tempCtx.quadraticCurveTo(x + offset, y + scaledHeight - offset, x + offset, y + scaledHeight - radius - offset);
+        tempCtx.lineTo(x + offset, y + radius + offset);
+        tempCtx.quadraticCurveTo(x + offset, y + offset, x + radius + offset, y + offset);
+        tempCtx.closePath();
+
+        // Clip and draw the video
         tempCtx.clip();
         tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
+
+        // Add a subtle border to smooth out edges
+        tempCtx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+        tempCtx.lineWidth = 1;
+        tempCtx.stroke();
+
         tempCtx.restore();
 
         // Composite temp canvas onto main canvas
