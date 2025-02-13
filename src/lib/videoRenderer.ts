@@ -102,9 +102,6 @@ export class VideoRenderer {
   ): Promise<void> => {
     if (this.isDrawing) return;
     
-    // Don't do frame timing check here - it's handled by startAnimation for preview
-    // and by MediaRecorder for export
-    
     const { video, canvas, tempCanvas, segment, backgroundConfig, mousePositions } = context;
     if (!video || !canvas || !segment) return;
 
@@ -141,7 +138,21 @@ export class VideoRenderer {
         const zoomState = this.calculateCurrentZoomState(video.currentTime, segment);
 
         ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
+        
+        // Apply zoom transformation to entire canvas before drawing anything
+        if (zoomState && zoomState.zoomFactor !== 1) {
+            const zoomedWidth = canvas.width * zoomState.zoomFactor;
+            const zoomedHeight = canvas.height * zoomState.zoomFactor;
+            const zoomOffsetX = (canvas.width - zoomedWidth) * zoomState.positionX;
+            const zoomOffsetY = (canvas.height - zoomedHeight) * zoomState.positionY;
+            
+            ctx.translate(zoomOffsetX, zoomOffsetY);
+            ctx.scale(zoomState.zoomFactor, zoomState.zoomFactor);
+        }
+
+        // Draw background first
+        ctx.fillStyle = this.getBackgroundStyle(ctx, backgroundConfig.backgroundType);
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         // Setup temporary canvas for rounded corners and shadows
         tempCanvas.width = canvas.width;
@@ -149,13 +160,8 @@ export class VideoRenderer {
         const tempCtx = tempCanvas.getContext('2d');
         if (!tempCtx) return;
 
-        // Clear both canvases
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Clear temp canvas
         tempCtx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Draw background to main canvas first
-        ctx.fillStyle = this.getBackgroundStyle(ctx, backgroundConfig.backgroundType);
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         // Draw video frame with rounded corners to temp canvas
         tempCtx.save();
@@ -183,9 +189,7 @@ export class VideoRenderer {
             tempCtx.shadowColor = 'rgba(0, 0, 0, 0.3)';
             tempCtx.shadowBlur = backgroundConfig.shadow;
             tempCtx.shadowOffsetY = backgroundConfig.shadow * 0.5;
-            // Draw the shadow by filling again
             tempCtx.fill();
-            // Reset shadow for video drawing
             tempCtx.shadowColor = 'transparent';
             tempCtx.shadowBlur = 0;
             tempCtx.shadowOffsetY = 0;
@@ -193,20 +197,7 @@ export class VideoRenderer {
 
         // Now clip and draw video
         tempCtx.clip();
-        if (zoomState && zoomState.zoomFactor !== 1) {
-            const zoomedWidth = scaledWidth * zoomState.zoomFactor;
-            const zoomedHeight = scaledHeight * zoomState.zoomFactor;
-            const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
-            const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
-            
-            tempCtx.save();
-            tempCtx.translate(x + zoomOffsetX, y + zoomOffsetY);
-            tempCtx.scale(zoomState.zoomFactor * scale, zoomState.zoomFactor * scale);
-            tempCtx.drawImage(video, 0, 0, video.videoWidth, video.videoHeight);
-            tempCtx.restore();
-        } else {
-            tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
-        }
+        tempCtx.drawImage(video, x, y, scaledWidth, scaledHeight);
         tempCtx.restore();
 
         // Composite temp canvas onto main canvas
@@ -216,22 +207,23 @@ export class VideoRenderer {
         const cursorStart = performance.now();
         const interpolatedPosition = this.interpolateCursorPosition(video.currentTime, mousePositions, backgroundConfig);
         if (interpolatedPosition) {
+            // Save current transform
+            ctx.save();
+            // Reset the transform before drawing cursor
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+
             // Calculate cursor position in original video space first
             let cursorX = x + (interpolatedPosition.x * scaledWidth / video.videoWidth);
             let cursorY = y + (interpolatedPosition.y * scaledHeight / video.videoHeight);
 
-            // If there's zoom, adjust cursor position using same transform
+            // If there's zoom, adjust cursor position
             if (zoomState && zoomState.zoomFactor !== 1) {
-                const zoomedWidth = scaledWidth * zoomState.zoomFactor;
-                const zoomedHeight = scaledHeight * zoomState.zoomFactor;
-                const zoomOffsetX = (scaledWidth - zoomedWidth) * zoomState.positionX;
-                const zoomOffsetY = (scaledHeight - zoomedHeight) * zoomState.positionY;
-
-                cursorX = (cursorX - x) * zoomState.zoomFactor + x + zoomOffsetX;
-                cursorY = (cursorY - y) * zoomState.zoomFactor + y + zoomOffsetY;
+                // Apply the same zoom transformation to cursor position
+                cursorX = cursorX * zoomState.zoomFactor + (canvas.width - canvas.width * zoomState.zoomFactor) * zoomState.positionX;
+                cursorY = cursorY * zoomState.zoomFactor + (canvas.height - canvas.height * zoomState.zoomFactor) * zoomState.positionY;
             }
 
-            // Scale cursor size based on video dimensions ratio
+            // Scale cursor size based on video dimensions ratio and zoom
             const sizeRatio = Math.min(targetWidth / video.videoWidth, targetHeight / video.videoHeight);
             const cursorScale = (backgroundConfig.cursorScale || 2) * sizeRatio * (zoomState?.zoomFactor || 1);
 
@@ -243,6 +235,9 @@ export class VideoRenderer {
                 cursorScale,
                 interpolatedPosition.cursor_type || 'default'
             );
+
+            // Restore transform
+            ctx.restore();
         }
         const timings = { cursor: performance.now() - cursorStart };
 
