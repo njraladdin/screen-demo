@@ -33,6 +33,9 @@ use windows::Win32::UI::WindowsAndMessaging::GetCursorInfo;
 use windows::Win32::UI::WindowsAndMessaging::CURSORINFO;
 use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, IDC_ARROW, IDC_IBEAM, IDC_HAND};
 use windows::core::PCWSTR;
+use rdev::{listen, Event, EventType};
+use std::sync::mpsc;
+use std::sync::atomic::AtomicU64;
 
 // Global static variables that can be safely accessed from multiple threads
 static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
@@ -47,6 +50,8 @@ static VIDEO_MMAP: ParkingMutex<Option<Arc<Mmap>>> = ParkingMutex::new(None);
 static PORT: AtomicU16 = AtomicU16::new(0);
 static SERVER_PORTS: Mutex<Vec<u16>> = Mutex::new(Vec::new());
 static LAST_CURSOR_TYPE: Mutex<String> = Mutex::new(String::new());
+static LAST_CLICK_TIME: AtomicU64 = AtomicU64::new(0);
+static CLICK_LOGGED: AtomicBool = AtomicBool::new(false);
 
 // Add these new structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +505,36 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
 
     // Signal that we should start listening for clicks
     SHOULD_LISTEN_CLICKS.store(true, Ordering::SeqCst);
+
+    // Create a channel for mouse events
+    let (tx, rx) = mpsc::channel();
+    
+    // Clone the transmitter for the callback
+    let tx_clone = tx.clone();
+    
+    // Spawn mouse listener thread
+    thread::spawn(move || {
+        if let Err(error) = listen(move |event| {
+            match event.event_type {
+                EventType::ButtonPress(_) => {
+                    if !CLICK_LOGGED.load(Ordering::SeqCst) {
+                        IS_MOUSE_CLICKED.store(true, Ordering::SeqCst);
+                        CLICK_LOGGED.store(true, Ordering::SeqCst);
+                        println!("Mouse clicked");  // Debug log only once per click
+                        let _ = tx_clone.send(true);
+                    }
+                },
+                EventType::ButtonRelease(_) => {
+                    IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
+                    CLICK_LOGGED.store(false, Ordering::SeqCst);
+                    let _ = tx_clone.send(false);
+                },
+                _ => {}
+            }
+        }) {
+            println!("Error setting up mouse listener: {:?}", error);
+        }
+    });
 
     // Spawn new thread for capture process
     thread::spawn(move || {

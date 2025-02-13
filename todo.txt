@@ -12,13 +12,12 @@ simpelr quality options. smaller renderer video size, done
 record in 120, export in 60, done 
 improve mouse smoothness effect, done 
 update timeline: update vidoe track design, add thumbnails, add duration, done 
+change cursor type depending on actual cursor type, done    
+filter out very small cursor changes that happens when moving mouse, done 
 
-change cursor type depending on actual cursor type, 
-filter out very small cursor changes that happens when moving mouse
+animate cursor click, done 
 
 
-
-cursor click should be an animated cursor jump
 background should not be fixed, it should also get zoomed in 
 
 

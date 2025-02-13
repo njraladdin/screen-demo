@@ -33,7 +33,7 @@ export class VideoRenderer {
     isSquishing: false
   };
   private SQUISH_DURATION = 100; // Faster initial squish for snappier feel
-  private RELEASE_DURATION = 600; // Longer release for spring effect
+  private RELEASE_DURATION = 300; // Shorter release for quicker bounce back
   private lastDrawTime: number = 0;
   private readonly FRAME_INTERVAL = 1000 / 120; // Increase to 120fps for smoother animation
   private backgroundConfig: BackgroundConfig | null = null;
@@ -674,26 +674,39 @@ export class VideoRenderer {
     ctx.scale(scale, scale);
     
     // Handle click animation state
+    const now = performance.now();
     if (isClicked && !this.cursorAnimation.isAnimating) {
-      this.cursorAnimation.startTime = performance.now();
-      this.cursorAnimation.isAnimating = true;
-      this.cursorAnimation.progress = 0;
-      this.cursorAnimation.isSquishing = true;
+        // Start new click animation
+        this.cursorAnimation.startTime = now;
+        this.cursorAnimation.isAnimating = true;
+        this.cursorAnimation.isSquishing = true;
     }
     
     // Apply animation transforms
     if (this.cursorAnimation.isAnimating) {
-      const t = this.cursorAnimation.progress;
-      let scaleAmount = 1;
-      
-      if (this.cursorAnimation.isSquishing) {
-        scaleAmount = 1 - (0.25 * this.easeInBack(t));
-      } else {
-        const baseReturn = 0.75 + (0.25 * (1 - Math.exp(-t * 3)));
-        scaleAmount = baseReturn * this.springyBounce(t);
-      }
-      
-      ctx.scale(scaleAmount, scaleAmount);
+        const elapsed = now - this.cursorAnimation.startTime;
+        
+        if (this.cursorAnimation.isSquishing) {
+            // Squish phase
+            const progress = Math.min(1, elapsed / this.SQUISH_DURATION);
+            const scaleAmount = 1 - (0.2 * this.easeOutQuad(progress)); // Reduce scale by 20%
+            ctx.scale(scaleAmount, scaleAmount);
+            
+            if (progress >= 1) {
+                // Switch to release phase
+                this.cursorAnimation.isSquishing = false;
+                this.cursorAnimation.startTime = now;
+            }
+        } else {
+            // Release/bounce phase
+            const progress = Math.min(1, elapsed / this.RELEASE_DURATION);
+            const baseScale = 0.8 + (0.2 * this.easeOutBack(progress));
+            ctx.scale(baseScale, baseScale);
+            
+            if (progress >= 1) {
+                this.cursorAnimation.isAnimating = false;
+            }
+        }
     }
 
     // Add some debug logging
@@ -760,16 +773,14 @@ export class VideoRenderer {
   }
 
   // Helper methods for animations
-  private easeInBack(t: number): number {
-    const c1 = 1.70158;
-    const c3 = c1 + 1;
-    return c3 * t * t * t - c1 * t * t;
+  private easeOutQuad(t: number): number {
+    return t * (2 - t);
   }
 
-  private springyBounce(t: number): number {
-    const decay = Math.exp(-t * 6);
-    const oscillation = Math.sin(t * 12);
-    return 1 + (decay * oscillation * 0.2);
+  private easeOutBack(t: number): number {
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
   }
 }
 
