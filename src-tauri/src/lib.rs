@@ -115,7 +115,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         // Create encoder
         let encoder = VideoEncoder::new(
             VideoSettingsBuilder::new(width, height)
-                .frame_rate(60)
+                .frame_rate(120)
                 .bitrate(50_000_000),  // Reduced bitrate for faster processing
             AudioSettingsBuilder::default().disabled(true),
             ContainerSettingsBuilder::default(),

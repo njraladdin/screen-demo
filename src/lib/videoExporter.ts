@@ -29,7 +29,7 @@ type DimensionPresetConfig = OriginalDimensionPreset | FixedDimensionPreset;
 
 export const EXPORT_PRESETS: Record<ExportQuality, QualityPreset> = {
   balanced: {           
-    bitrate: 8000000,   // 8Mbps
+    bitrate: 10000000,   // 10Mbps
     label: 'Balanced Quality'
   },
   original: {

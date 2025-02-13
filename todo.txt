@@ -8,5 +8,11 @@ increease fps to 120, done
 increase bitrate to 50mbps, done 
 simpelr quality options. smaller renderer video size, done 
 
+record in 120, export in 60, done 
+add subtle cursor motion blur, improve mouse smoothness effect 
 
-
+update trimmers deisng so it's clear that it's a trimmablae section (rounded corners)
+change cursor type depending on acutla cursor type 
+cursor click should be an animated cursor jump
+automatic zooms 
+background should not be fixed, it should also get zoomed in 

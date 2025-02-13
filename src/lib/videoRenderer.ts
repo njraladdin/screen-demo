@@ -36,6 +36,7 @@ export class VideoRenderer {
   private RELEASE_DURATION = 600; // Longer release for spring effect
   private lastDrawTime: number = 0;
   private readonly FRAME_INTERVAL = 1000 / 120; // Increase to 120fps for smoother animation
+  private backgroundConfig: BackgroundConfig | null = null;
 
   private readonly DEFAULT_STATE: ZoomKeyframe = {
     time: 0,
@@ -242,6 +243,8 @@ export class VideoRenderer {
             });
         }
 
+        this.backgroundConfig = context.backgroundConfig;
+
     } finally {
         this.isDrawing = false;
         ctx.restore();
@@ -430,40 +433,99 @@ export class VideoRenderer {
 
   private smoothMousePositions(
     positions: MousePosition[],
-    targetFps: number = 60
+    targetFps: number = 120
   ): MousePosition[] {
     if (positions.length < 4) return positions;
 
     const smoothed: MousePosition[] = [];
     const timeStep = 1 / targetFps;
 
-    // Process positions in groups of 4 for Catmull-Rom interpolation
+    // First pass: Catmull-Rom interpolation
     for (let i = 0; i < positions.length - 3; i++) {
-      const p0 = positions[i];
-      const p1 = positions[i + 1];
-      const p2 = positions[i + 2];
-      const p3 = positions[i + 3];
+        const p0 = positions[i];
+        const p1 = positions[i + 1];
+        const p2 = positions[i + 2];
+        const p3 = positions[i + 3];
 
-      // Calculate how many frames we need between these points
-      const segmentDuration = p2.timestamp - p1.timestamp;
-      const numFrames = Math.ceil(segmentDuration * targetFps);
+        const segmentDuration = p2.timestamp - p1.timestamp;
+        const numFrames = Math.ceil(segmentDuration * targetFps);
 
-      // Generate smooth intermediate positions
-      for (let frame = 0; frame < numFrames; frame++) {
-        const t = frame / numFrames;
-        const timestamp = p1.timestamp + (segmentDuration * t);
+        for (let frame = 0; frame < numFrames; frame++) {
+            const t = frame / numFrames;
+            const timestamp = p1.timestamp + (segmentDuration * t);
 
-        const x = this.catmullRomInterpolate(p0.x, p1.x, p2.x, p3.x, t);
-        const y = this.catmullRomInterpolate(p0.y, p1.y, p2.y, p3.y, t);
+            const x = this.catmullRomInterpolate(p0.x, p1.x, p2.x, p3.x, t);
+            const y = this.catmullRomInterpolate(p0.y, p1.y, p2.y, p3.y, t);
+            const isClicked = Boolean(p1.isClicked || p2.isClicked);
 
-        // Determine click state based on surrounding points
-        const isClicked = Boolean(p1.isClicked || p2.isClicked);
-
-        smoothed.push({ x, y, timestamp, isClicked });
-      }
+            smoothed.push({ x, y, timestamp, isClicked });
+        }
     }
 
-    return smoothed;
+    // Get smoothness value from background config, default to 5 if not set
+    // Scale it up to make the effect more noticeable (1-10 becomes 2-20)
+    const windowSize = ((this.backgroundConfig?.cursorSmoothness || 5) * 2) + 1;
+    
+    // Multiple smoothing passes based on smoothness value
+    const passes = Math.ceil(windowSize / 2);
+    let currentSmoothed = smoothed;
+
+    // Apply multiple passes of smoothing based on the smoothness value
+    for (let pass = 0; pass < passes; pass++) {
+        const passSmoothed: MousePosition[] = [];
+        
+        for (let i = 0; i < currentSmoothed.length; i++) {
+            let sumX = 0;
+            let sumY = 0;
+            let totalWeight = 0;
+            
+            // Use a weighted average where closer points have more influence
+            for (let j = Math.max(0, i - windowSize); j <= Math.min(currentSmoothed.length - 1, i + windowSize); j++) {
+                // Calculate distance-based weight
+                const distance = Math.abs(i - j);
+                const weight = Math.exp(-distance * (0.5 / windowSize)); // Gaussian-like weight
+                
+                sumX += currentSmoothed[j].x * weight;
+                sumY += currentSmoothed[j].y * weight;
+                totalWeight += weight;
+            }
+
+            passSmoothed.push({
+                x: sumX / totalWeight,
+                y: sumY / totalWeight,
+                timestamp: currentSmoothed[i].timestamp,
+                isClicked: currentSmoothed[i].isClicked
+            });
+        }
+        
+        currentSmoothed = passSmoothed;
+    }
+
+    // Apply threshold to remove tiny movements
+    // Make threshold smaller for higher smoothness values
+    const threshold = 0.5 / (windowSize / 2); // Adjust threshold based on smoothness
+    let lastSignificantPos = currentSmoothed[0];
+    const finalSmoothed = [lastSignificantPos];
+
+    for (let i = 1; i < currentSmoothed.length; i++) {
+        const current = currentSmoothed[i];
+        const distance = Math.sqrt(
+            Math.pow(current.x - lastSignificantPos.x, 2) + 
+            Math.pow(current.y - lastSignificantPos.y, 2)
+        );
+
+        if (distance > threshold || current.isClicked !== lastSignificantPos.isClicked) {
+            finalSmoothed.push(current);
+            lastSignificantPos = current;
+        } else {
+            finalSmoothed.push({
+                ...lastSignificantPos,
+                timestamp: current.timestamp
+            });
+        }
+    }
+
+    return finalSmoothed;
   }
 
   private interpolateCursorPosition(
