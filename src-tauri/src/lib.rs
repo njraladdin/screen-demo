@@ -29,6 +29,10 @@ use parking_lot::Mutex as ParkingMutex;
 use memmap2::Mmap;
 use std::sync::atomic::AtomicU16;
 use tiny_http::{Server, Response, StatusCode};
+use windows::Win32::UI::WindowsAndMessaging::GetCursorInfo;
+use windows::Win32::UI::WindowsAndMessaging::CURSORINFO;
+use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, IDC_ARROW, IDC_IBEAM, IDC_HAND};
+use windows::core::PCWSTR;
 
 // Global static variables that can be safely accessed from multiple threads
 static RECORDING: AtomicBool = AtomicBool::new(false);  // Tracks if we're currently recording
@@ -42,6 +46,7 @@ static ENCODER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static VIDEO_MMAP: ParkingMutex<Option<Arc<Mmap>>> = ParkingMutex::new(None);
 static PORT: AtomicU16 = AtomicU16::new(0);
 static SERVER_PORTS: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+static LAST_CURSOR_TYPE: Mutex<String> = Mutex::new(String::new());
 
 // Add these new structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +55,7 @@ pub struct MousePosition {
     y: i32,
     timestamp: f64,
     isClicked: bool,
+    cursor_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +82,33 @@ struct CaptureHandler {
     frame_count: u32,
     last_frame_time: Instant,
     dropped_frames: u32,
+}
+
+// Replace the get_cursor_type function with this cleaner version
+fn get_cursor_type() -> String {
+    unsafe {
+        let mut cursor_info: CURSORINFO = std::mem::zeroed();
+        cursor_info.cbSize = std::mem::size_of::<CURSORINFO>() as u32;
+        
+        if GetCursorInfo(&mut cursor_info).as_bool() {
+            let current_handle = cursor_info.hCursor.0;
+            
+            // Load system cursors to get their actual handles
+            let arrow = LoadCursorW(None, PCWSTR(IDC_ARROW.0 as *const u16)).unwrap().0;
+            let ibeam = LoadCursorW(None, PCWSTR(IDC_IBEAM.0 as *const u16)).unwrap().0;
+            let hand = LoadCursorW(None, PCWSTR(IDC_HAND.0 as *const u16)).unwrap().0;
+            
+            // Compare with actual system cursor handles without logging every check
+            match current_handle {
+                h if h == arrow => "default".to_string(),
+                h if h == ibeam => "text".to_string(),
+                h if h == hand => "pointer".to_string(),
+                _ => "other".to_string(),
+            }
+        } else {
+            "default".to_string()
+        }
+    }
 }
 
 // Implementation of the GraphicsCaptureApiHandler trait for our CaptureHandler
@@ -229,6 +262,17 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                 if GetCursorPos(&mut point).as_bool() {
                     let is_clicked = IS_MOUSE_CLICKED.load(Ordering::SeqCst);
                     
+                    // Get cursor type
+                    let cursor_type = get_cursor_type();
+                    
+                    // Log cursor type changes
+                    if let Ok(mut last_type) = LAST_CURSOR_TYPE.lock() {
+                        if *last_type != cursor_type {
+                            println!("Cursor changed from '{}' to '{}'", last_type, cursor_type);
+                            *last_type = cursor_type.clone();
+                        }
+                    }
+                    
                     // Adjust coordinates relative to the monitor's position
                     let relative_x = point.x - MONITOR_X;
                     let relative_y = point.y - MONITOR_Y;
@@ -238,6 +282,7 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                         y: relative_y,
                         timestamp: self.start.elapsed().as_secs_f64(),
                         isClicked: is_clicked,
+                        cursor_type,
                     };
                     
                     // Only store positions that are within the monitor bounds
@@ -638,7 +683,33 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
     Ok(port)
 }
 
-// 2. Modify stop_recording to use this
+// Add this function near the other utility functions
+fn process_cursor_changes(positions: &mut Vec<MousePosition>) {
+    const MIN_DURATION_MS: f64 = 100.0;
+    
+    let mut i = 0;
+    while i < positions.len() - 1 {
+        let current_type = &positions[i].cursor_type;
+        let mut j = i + 1;
+        
+        while j < positions.len() && positions[j].cursor_type == *current_type {
+            j += 1;
+        }
+
+        // If this cursor type lasted less than MIN_DURATION_MS and we're not at the start
+        let duration = (positions[j-1].timestamp - positions[i].timestamp) * 1000.0;
+        if duration < MIN_DURATION_MS && i > 0 {
+            // Replace the short duration with the previous type
+            let prev_type = positions[i-1].cursor_type.clone();
+            for pos in positions.iter_mut().take(j).skip(i) {
+                pos.cursor_type = prev_type.clone();
+            }
+        }
+        i = j;
+    }
+}
+
+// Modify the existing stop_recording command
 #[tauri::command]
 async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePosition>), String> {
     println!("Starting recording stop process...");
@@ -682,7 +753,9 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
         Ok(port) => {
             println!("Server started successfully on port {}", port);
             let mouse_positions = if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
-                positions.drain(..).collect()
+                let mut positions: Vec<MousePosition> = positions.drain(..).collect();
+                process_cursor_changes(&mut positions);
+                positions
             } else {
                 Vec::new()
             };

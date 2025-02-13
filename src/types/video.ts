@@ -30,6 +30,7 @@ export interface MousePosition {
   y: number;
   timestamp: number;
   isClicked?: boolean;
+  cursor_type?: string;
 }
 
 export interface VideoMetadata {

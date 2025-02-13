@@ -37,6 +37,7 @@ export class VideoRenderer {
   private lastDrawTime: number = 0;
   private readonly FRAME_INTERVAL = 1000 / 120; // Increase to 120fps for smoother animation
   private backgroundConfig: BackgroundConfig | null = null;
+  private pointerImage: HTMLImageElement;
 
   private readonly DEFAULT_STATE: ZoomKeyframe = {
     time: 0,
@@ -48,22 +49,33 @@ export class VideoRenderer {
   };
 
   private smoothedPositions: MousePosition[] | null = null;
+  private hasLoggedPositions = false;
 
   constructor() {
-    // Nothing needed here for now
+    // Preload the pointer SVG image.
+    this.pointerImage = new Image();
+    this.pointerImage.src = '/pointer.svg';
+    this.pointerImage.onload = () => {
+      console.log('[VideoRenderer] Pointer image loaded:', this.pointerImage.naturalWidth, this.pointerImage.naturalHeight);
+    };
   }
 
   public startAnimation(renderContext: RenderContext) {
     console.log('[VideoRenderer] Starting animation');
     this.stopAnimation();
-    this.lastDrawTime = 0; // Reset timing on new animation
-    this.smoothedPositions = null; // Reset smoothed positions
+    this.lastDrawTime = 0;
+    this.smoothedPositions = null;
 
     const animate = () => {
+      // Only animate if video is playing
+      if (renderContext.video.paused) {
+        this.animationFrame = requestAnimationFrame(animate);
+        return;
+      }
+
       const now = performance.now();
       const elapsed = now - this.lastDrawTime;
 
-      // Only draw if enough time has passed or if it's the first frame
       if (this.lastDrawTime === 0 || elapsed >= this.FRAME_INTERVAL) {
         this.drawFrame(renderContext)
           .catch(err => console.error('[VideoRenderer] Draw error:', err));
@@ -228,7 +240,8 @@ export class VideoRenderer {
                 cursorX,
                 cursorY,
                 interpolatedPosition.isClicked || false,
-                cursorScale
+                cursorScale,
+                interpolatedPosition.cursor_type || 'default'
             );
         }
         const timings = { cursor: performance.now() - cursorStart };
@@ -442,24 +455,26 @@ export class VideoRenderer {
 
     // First pass: Catmull-Rom interpolation
     for (let i = 0; i < positions.length - 3; i++) {
-        const p0 = positions[i];
-        const p1 = positions[i + 1];
-        const p2 = positions[i + 2];
-        const p3 = positions[i + 3];
+      const p0 = positions[i];
+      const p1 = positions[i + 1];
+      const p2 = positions[i + 2];
+      const p3 = positions[i + 3];
 
-        const segmentDuration = p2.timestamp - p1.timestamp;
-        const numFrames = Math.ceil(segmentDuration * targetFps);
+      const segmentDuration = p2.timestamp - p1.timestamp;
+      const numFrames = Math.ceil(segmentDuration * targetFps);
 
-        for (let frame = 0; frame < numFrames; frame++) {
-            const t = frame / numFrames;
-            const timestamp = p1.timestamp + (segmentDuration * t);
+      for (let frame = 0; frame < numFrames; frame++) {
+        const t = frame / numFrames;
+        const timestamp = p1.timestamp + (segmentDuration * t);
 
-            const x = this.catmullRomInterpolate(p0.x, p1.x, p2.x, p3.x, t);
-            const y = this.catmullRomInterpolate(p0.y, p1.y, p2.y, p3.y, t);
-            const isClicked = Boolean(p1.isClicked || p2.isClicked);
+        const x = this.catmullRomInterpolate(p0.x, p1.x, p2.x, p3.x, t);
+        const y = this.catmullRomInterpolate(p0.y, p1.y, p2.y, p3.y, t);
+        const isClicked = Boolean(p1.isClicked || p2.isClicked);
+        // Use the cursor type from the nearest position
+        const cursor_type = t < 0.5 ? p1.cursor_type : p2.cursor_type;
 
-            smoothed.push({ x, y, timestamp, isClicked });
-        }
+        smoothed.push({ x, y, timestamp, isClicked, cursor_type });
+      }
     }
 
     // Get smoothness value from background config, default to 5 if not set
@@ -479,11 +494,13 @@ export class VideoRenderer {
             let sumY = 0;
             let totalWeight = 0;
             
-            // Use a weighted average where closer points have more influence
+            // Keep cursor type from original position
+            const cursor_type = currentSmoothed[i].cursor_type;
+            
+            // Only smooth position, not cursor type
             for (let j = Math.max(0, i - windowSize); j <= Math.min(currentSmoothed.length - 1, i + windowSize); j++) {
-                // Calculate distance-based weight
                 const distance = Math.abs(i - j);
-                const weight = Math.exp(-distance * (0.5 / windowSize)); // Gaussian-like weight
+                const weight = Math.exp(-distance * (0.5 / windowSize));
                 
                 sumX += currentSmoothed[j].x * weight;
                 sumY += currentSmoothed[j].y * weight;
@@ -494,7 +511,8 @@ export class VideoRenderer {
                 x: sumX / totalWeight,
                 y: sumY / totalWeight,
                 timestamp: currentSmoothed[i].timestamp,
-                isClicked: currentSmoothed[i].isClicked
+                isClicked: currentSmoothed[i].isClicked,
+                cursor_type // Preserve the cursor type
             });
         }
         
@@ -532,8 +550,24 @@ export class VideoRenderer {
     currentTime: number,
     mousePositions: MousePosition[],
     backgroundConfig: BackgroundConfig
-  ): { x: number; y: number; isClicked: boolean } | null {
+  ): { x: number; y: number; isClicked: boolean; cursor_type: string } | null {
     if (mousePositions.length === 0) return null;
+
+    // Add cursor type frequency analysis
+    if (!this.hasLoggedPositions) {
+      const typeCounts = mousePositions.reduce((acc, pos) => {
+        const type = pos.cursor_type || 'default';
+        acc[type] = (acc[type] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      console.log('Cursor type frequencies:', {
+        total: mousePositions.length,
+        types: typeCounts
+      });
+      
+      this.hasLoggedPositions = true;
+    }
 
     // Cache smoothed positions
     if (!this.smoothedPositions || this.smoothedPositions.length === 0) {
@@ -545,10 +579,16 @@ export class VideoRenderer {
     // Find the exact position for the current time
     const exactMatch = positions.find(pos => Math.abs(pos.timestamp - currentTime) < 0.001);
     if (exactMatch) {
+      console.log('Exact match found:', {
+        time: currentTime,
+        cursor_type: exactMatch.cursor_type,
+        pos: exactMatch
+      });
       return {
         x: exactMatch.x,
         y: exactMatch.y,
-        isClicked: Boolean(exactMatch.isClicked)
+        isClicked: Boolean(exactMatch.isClicked),
+        cursor_type: exactMatch.cursor_type || 'default'
       };
     }
 
@@ -556,10 +596,16 @@ export class VideoRenderer {
     const nextIndex = positions.findIndex(pos => pos.timestamp > currentTime);
     if (nextIndex === -1) {
       const last = positions[positions.length - 1];
+      console.log('Using last position:', {
+        time: currentTime,
+        cursor_type: last.cursor_type,
+        pos: last
+      });
       return {
         x: last.x,
         y: last.y,
-        isClicked: Boolean(last.isClicked)
+        isClicked: Boolean(last.isClicked),
+        cursor_type: last.cursor_type || 'default'
       };
     }
 
@@ -568,7 +614,8 @@ export class VideoRenderer {
       return {
         x: first.x,
         y: first.y,
-        isClicked: Boolean(first.isClicked)
+        isClicked: Boolean(first.isClicked),
+        cursor_type: first.cursor_type || 'default'
       };
     }
 
@@ -576,31 +623,55 @@ export class VideoRenderer {
     const prev = positions[nextIndex - 1];
     const next = positions[nextIndex];
     const t = (currentTime - prev.timestamp) / (next.timestamp - prev.timestamp);
+    console.log('Interpolating between:', {
+      time: currentTime,
+      prev_type: prev.cursor_type,
+      next_type: next.cursor_type,
+      prev,
+      next
+    });
 
     return {
       x: prev.x + (next.x - prev.x) * t,
       y: prev.y + (next.y - prev.y) * t,
-      isClicked: Boolean(prev.isClicked || next.isClicked)
+      isClicked: Boolean(prev.isClicked || next.isClicked),
+      cursor_type: next.cursor_type || 'default'
     };
   }
 
-  private drawMouseCursor(ctx: CanvasRenderingContext2D, x: number, y: number, isClicked: boolean, scale: number = 2) {
+  private drawMouseCursor(
+    ctx: CanvasRenderingContext2D, 
+    x: number, 
+    y: number, 
+    isClicked: boolean, 
+    scale: number = 2,
+    cursorType: string = 'default'
+  ) {
     ctx.save();
-    // Draw cursor directly without any filters or effects
-    this.drawCursorShape(ctx, x, y, isClicked, scale);
+    this.drawCursorShape(ctx, x, y, isClicked, scale, cursorType);
     ctx.restore();
   }
 
-  private drawCursorShape(ctx: CanvasRenderingContext2D, x: number, y: number, isClicked: boolean, scale: number = 2) {
+  private drawCursorShape(
+    ctx: CanvasRenderingContext2D, 
+    x: number, 
+    y: number, 
+    isClicked: boolean, 
+    scale: number = 2,
+    cursorType: string
+  ) {
+    const lowerType = cursorType.toLowerCase();
+    console.log('Drawing cursor:', {
+      type: cursorType,
+      lowerType,
+      x,
+      y,
+      isClicked
+    });
+
     ctx.save();
     ctx.translate(x, y);
-    const cursorScale = scale;
-    
-    // First apply the base cursor scale normally
-    ctx.scale(cursorScale, cursorScale);
-    
-    // Adjust translation for better click point alignment
-    ctx.translate(-8, -5);
+    ctx.scale(scale, scale);
     
     // Handle click animation state
     if (isClicked && !this.cursorAnimation.isAnimating) {
@@ -610,71 +681,95 @@ export class VideoRenderer {
       this.cursorAnimation.isSquishing = true;
     }
     
-    // Handle animation state changes
-    if (this.cursorAnimation.isAnimating) {
-      const elapsed = performance.now() - this.cursorAnimation.startTime;
-      const duration = this.cursorAnimation.isSquishing ? this.SQUISH_DURATION : this.RELEASE_DURATION;
-      this.cursorAnimation.progress = Math.min(elapsed / duration, 1);
-      
-      if (this.cursorAnimation.progress >= 1 && this.cursorAnimation.isSquishing && isClicked) {
-        // Switch to release phase
-        this.cursorAnimation.startTime = performance.now();
-        this.cursorAnimation.progress = 0;
-        this.cursorAnimation.isSquishing = false;
-      } else if (this.cursorAnimation.progress >= 1) {
-        this.cursorAnimation.isAnimating = false;
-      }
-    }
-    
-    // Apply scale animation
+    // Apply animation transforms
     if (this.cursorAnimation.isAnimating) {
       const t = this.cursorAnimation.progress;
-      let scaleAmount;
+      let scaleAmount = 1;
       
       if (this.cursorAnimation.isSquishing) {
-        // Quick scale down with slight anticipation
-        const easeInBack = (t: number): number => {
-          const c1 = 1.70158;
-          const c3 = c1 + 1;
-          return c3 * t * t * t - c1 * t * t;
-        };
-        scaleAmount = 1 - (0.25 * easeInBack(t));  // Scale down to 75%
+        scaleAmount = 1 - (0.25 * this.easeInBack(t));
       } else {
-        // Springy bounce back
-        const springyBounce = (t: number): number => {
-          // More pronounced spring effect
-          const decay = Math.exp(-t * 6);
-          const oscillation = Math.sin(t * 12);
-          return 1 + (decay * oscillation * 0.2); // 0.2 controls bounce magnitude
-        };
-        
-        // Combine smooth return with spring effect
         const baseReturn = 0.75 + (0.25 * (1 - Math.exp(-t * 3)));
-        scaleAmount = baseReturn * springyBounce(t);
+        scaleAmount = baseReturn * this.springyBounce(t);
       }
       
-      // Apply uniform scaling with spring effect
       ctx.scale(scaleAmount, scaleAmount);
     }
 
-    // Main arrow shape
-    const mainArrow = new Path2D('M 8.2 4.9 L 19.8 16.5 L 13 16.5 L 12.6 16.6 L 8.2 20.9 Z');
+    // Add some debug logging
+    console.log('Drawing cursor type:', cursorType);
     
-    // Click indicator
-    const clickIndicator = new Path2D('M 17.3 21.6 L 13.7 23.1 L 9 12 L 12.7 10.5 Z');
+    switch (lowerType) {
+      case 'text': {
+        console.log('Drawing TEXT cursor');
+        ctx.translate(-6, -8);
+        
+        // I-beam cursor with more detailed shape
+        const ibeam = new Path2D(`
+          M 2 0 L 10 0 L 10 2 L 7 2 L 7 14 L 10 14 L 10 16 L 2 16 L 2 14 L 5 14 L 5 2 L 2 2 Z
+        `);
+        
+        // White outline
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 1.5;
+        ctx.stroke(ibeam);
+        
+        // Black fill
+        ctx.fillStyle = 'black';
+        ctx.fill(ibeam);
+        break;
+      }
+      
+      case 'pointer': {
+        console.log('Drawing POINTER cursor with image, applying offset');
+        // If the pointer image is loaded, draw it. Use fallback dimensions if necessary.
+        let imgWidth = 24, imgHeight = 24;
+        if (this.pointerImage.complete && this.pointerImage.naturalWidth > 0) {
+          imgWidth = this.pointerImage.naturalWidth;
+          imgHeight = this.pointerImage.naturalHeight;
+        }
+        
+        // Shift the image offset to center the pointer tip
+        // Adjust offsetX and offsetY as needed. Here we shift right and down by 4 pixels each.
+        const offsetX = 8;
+        const offsetY = 16;
+        ctx.translate(-imgWidth / 2 + offsetX, -imgHeight / 2 + offsetY);
+        ctx.drawImage(this.pointerImage, 0, 0, imgWidth, imgHeight);
+        break;
+      }
+      
+      default: {
+        console.log('Drawing DEFAULT cursor');
+        ctx.translate(-8, -5);
+        const mainArrow = new Path2D('M 8.2 4.9 L 19.8 16.5 L 13 16.5 L 12.6 16.6 L 8.2 20.9 Z');
+        const clickIndicator = new Path2D('M 17.3 21.6 L 13.7 23.1 L 9 12 L 12.7 10.5 Z');
 
-    // White outline
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 1.5;
-    ctx.stroke(mainArrow);
-    ctx.stroke(clickIndicator);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 1.5;
+        ctx.stroke(mainArrow);
+        ctx.stroke(clickIndicator);
 
-    // Black fill
-    ctx.fillStyle = 'black';
-    ctx.fill(mainArrow);
-    ctx.fill(clickIndicator);
+        ctx.fillStyle = 'black';
+        ctx.fill(mainArrow);
+        ctx.fill(clickIndicator);
+        break;
+      }
+    }
 
     ctx.restore();
+  }
+
+  // Helper methods for animations
+  private easeInBack(t: number): number {
+    const c1 = 1.70158;
+    const c3 = c1 + 1;
+    return c3 * t * t * t - c1 * t * t;
+  }
+
+  private springyBounce(t: number): number {
+    const decay = Math.exp(-t * 6);
+    const oscillation = Math.sin(t * 12);
+    return 1 + (decay * oscillation * 0.2);
   }
 }
 
