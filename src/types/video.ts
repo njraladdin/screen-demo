@@ -18,8 +18,8 @@ export interface TextSegment {
   style: {
     fontSize: number;
     color: string;
-    position: 'top' | 'center' | 'bottom';
-    alignment: 'left' | 'center' | 'right';
+    x: number;  // 0-100 percentage
+    y: number;  // 0-100 percentage
   };
 }
 

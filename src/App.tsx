@@ -747,13 +747,13 @@ function App() {
     const newText: TextSegment = {
       id: crypto.randomUUID(),
       startTime: currentTime,
-      endTime: Math.min(currentTime + 3, duration), // Default 3 second duration
+      endTime: Math.min(currentTime + 3, duration),
       text: 'New Text',
       style: {
         fontSize: 24,
         color: '#ffffff',
-        position: 'center',
-        alignment: 'center'
+        x: 50,  // Center by default
+        y: 50   // Center by default
       }
     };
 
@@ -764,6 +764,47 @@ function App() {
     setEditingTextId(newText.id);
     setActivePanel('text');
   };
+
+  // Add these handlers in the App component
+  const handleTextDragMove = (id: string, x: number, y: number) => {
+    if (!segment) return;
+    setSegment({
+      ...segment,
+      textSegments: segment.textSegments.map(t =>
+        t.id === id ? { ...t, style: { ...t.style, x, y } } : t
+      )
+    });
+  };
+
+  // Add event listeners to the canvas
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !segment) return;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      videoRenderer.handleMouseDown(e, segment, canvas);
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      videoRenderer.handleMouseMove(e, segment, canvas, handleTextDragMove);
+    };
+
+    const handleMouseUp = () => {
+      videoRenderer.handleMouseUp(canvas);
+    };
+
+    canvas.addEventListener('mousedown', handleMouseDown);
+    canvas.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('mouseup', handleMouseUp);
+    canvas.addEventListener('mouseleave', handleMouseUp);
+
+    return () => {
+      canvas.removeEventListener('mousedown', handleMouseDown);
+      canvas.removeEventListener('mousemove', handleMouseMove);
+      canvas.removeEventListener('mouseup', handleMouseUp);
+      canvas.removeEventListener('mouseleave', handleMouseUp);
+    };
+  }, [segment]);
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
@@ -1131,86 +1172,62 @@ function App() {
                         />
                       </div>
                       
+                      {/* Shorter helper text */}
+                      <div className="bg-[#272729] rounded-lg p-3 text-sm text-[#818384]">
+                        <p className="flex items-center gap-2">
+                          <span className="bg-[#343536] rounded-full p-1">
+                            <Type className="w-4 h-4" />
+                          </span>
+                          Drag text to reposition
+                        </p>
+                      </div>
+
                       <div className="grid grid-cols-2 gap-4">
                         <div>
-                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Position</label>
+                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Font Size</label>
                           <select
-                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.position}
+                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.fontSize}
                             onChange={(e) => {
                               if (!segment) return;
                               setSegment({
                                 ...segment,
                                 textSegments: segment.textSegments.map(t =>
-                                  t.id === editingTextId ? { ...t, style: { ...t.style, position: e.target.value as any } } : t
+                                  t.id === editingTextId ? { ...t, style: { ...t.style, fontSize: Number(e.target.value) } } : t
                                 )
                               });
                             }}
                             className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
                           >
-                            <option value="top">Top</option>
-                            <option value="center">Center</option>
-                            <option value="bottom">Bottom</option>
+                            <option value="16">16</option>
+                            <option value="24">24</option>
+                            <option value="32">32</option>
+                            <option value="48">48</option>
+                            <option value="64">64</option>
+                            <option value="80">80</option>
+                            <option value="96">96</option>
+                            <option value="128">128</option>
+                            <option value="160">160</option>
+                            <option value="200">200</option>
                           </select>
                         </div>
-                        
+
                         <div>
-                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Alignment</label>
-                          <select
-                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.alignment}
+                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Color</label>
+                          <input
+                            type="color"
+                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.color}
                             onChange={(e) => {
                               if (!segment) return;
                               setSegment({
                                 ...segment,
                                 textSegments: segment.textSegments.map(t =>
-                                  t.id === editingTextId ? { ...t, style: { ...t.style, alignment: e.target.value as any } } : t
+                                  t.id === editingTextId ? { ...t, style: { ...t.style, color: e.target.value } } : t
                                 )
                               });
                             }}
-                            className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
-                          >
-                            <option value="left">Left</option>
-                            <option value="center">Center</option>
-                            <option value="right">Right</option>
-                          </select>
+                            className="w-12 h-10 bg-[#272729] border border-[#343536] rounded-md p-1"
+                          />
                         </div>
-                      </div>
-
-                      <div>
-                        <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Font Size</label>
-                        <input
-                          type="range"
-                          min="12"
-                          max="200"
-                          value={segment.textSegments.find(t => t.id === editingTextId)?.style.fontSize}
-                          onChange={(e) => {
-                            if (!segment) return;
-                            setSegment({
-                              ...segment,
-                              textSegments: segment.textSegments.map(t =>
-                                t.id === editingTextId ? { ...t, style: { ...t.style, fontSize: Number(e.target.value) } } : t
-                              )
-                            });
-                          }}
-                          className="w-full accent-[#0079d3]"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Color</label>
-                        <input
-                          type="color"
-                          value={segment.textSegments.find(t => t.id === editingTextId)?.style.color}
-                          onChange={(e) => {
-                            if (!segment) return;
-                            setSegment({
-                              ...segment,
-                              textSegments: segment.textSegments.map(t =>
-                                t.id === editingTextId ? { ...t, style: { ...t.style, color: e.target.value } } : t
-                              )
-                            });
-                          }}
-                          className="w-full bg-[#272729] border border-[#343536] rounded-md p-1"
-                        />
                       </div>
                     </div>
                   ) : (

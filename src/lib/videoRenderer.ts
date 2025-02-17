@@ -53,6 +53,10 @@ export class VideoRenderer {
   private smoothedPositions: MousePosition[] | null = null;
   private hasLoggedPositions = false;
 
+  private isDraggingText = false;
+  private draggedTextId: string | null = null;
+  private dragOffset = { x: 0, y: 0 };
+
   constructor() {
     // Preload the pointer SVG image.
     this.pointerImage = new Image();
@@ -886,27 +890,81 @@ export class VideoRenderer {
     // Configure text style
     ctx.font = `${textSegment.style.fontSize}px sans-serif`;
     ctx.fillStyle = textSegment.style.color;
-    ctx.textAlign = textSegment.style.alignment;
+    ctx.textAlign = 'center';
     
-    // Calculate position
-    let x = width / 2;
-    if (textSegment.style.alignment === 'left') x = 20;
-    if (textSegment.style.alignment === 'right') x = width - 20;
+    const x = (textSegment.style.x / 100) * width;
+    const y = (textSegment.style.y / 100) * height;
     
-    let y = height / 2;
-    if (textSegment.style.position === 'top') y = textSegment.style.fontSize + 20;
-    if (textSegment.style.position === 'bottom') y = height - 20;
+    // Draw hit area for dragging (invisible)
+    const metrics = ctx.measureText(textSegment.text);
+    const textHeight = textSegment.style.fontSize;
+    const hitArea = {
+      x: x - metrics.width / 2 - 10,
+      y: y - textHeight - 10,
+      width: metrics.width + 20,
+      height: textHeight + 20
+    };
+
+    // Optional: show hit area when text is being dragged
+    if (this.draggedTextId === textSegment.id) {
+      ctx.fillStyle = 'rgba(0, 121, 211, 0.1)';
+      ctx.fillRect(hitArea.x, hitArea.y, hitArea.width, hitArea.height);
+    }
     
-    // Add text shadow for better visibility
+    // Draw text with shadow
     ctx.shadowColor = 'rgba(0,0,0,0.7)';
     ctx.shadowBlur = 6;
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
-    
-    // Draw text
+    ctx.fillStyle = textSegment.style.color;
     ctx.fillText(textSegment.text, x, y);
     
     ctx.restore();
+    
+    // Return hit area for collision detection
+    return hitArea;
+  }
+
+  public handleMouseDown(e: MouseEvent, segment: VideoSegment, canvas: HTMLCanvasElement) {
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    // Check each text segment for collision
+    for (const text of segment.textSegments) {
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const hitArea = this.drawTextOverlay(ctx, text, canvas.width, canvas.height);
+      if (x >= hitArea.x && x <= hitArea.x + hitArea.width &&
+          y >= hitArea.y && y <= hitArea.y + hitArea.height) {
+        this.isDraggingText = true;
+        this.draggedTextId = text.id;
+        this.dragOffset.x = x - (text.style.x / 100 * canvas.width);
+        this.dragOffset.y = y - (text.style.y / 100 * canvas.height);
+        canvas.style.cursor = 'move';
+        break;
+      }
+    }
+  }
+
+  public handleMouseMove(e: MouseEvent, segment: VideoSegment, canvas: HTMLCanvasElement, onTextMove: (id: string, x: number, y: number) => void) {
+    if (!this.isDraggingText || !this.draggedTextId) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+    const newX = Math.max(0, Math.min(100, ((x - this.dragOffset.x) / canvas.width) * 100));
+    const newY = Math.max(0, Math.min(100, ((y - this.dragOffset.y) / canvas.height) * 100));
+
+    onTextMove(this.draggedTextId, newX, newY);
+  }
+
+  public handleMouseUp(canvas: HTMLCanvasElement) {
+    this.isDraggingText = false;
+    this.draggedTextId = null;
+    canvas.style.cursor = 'default';
   }
 }
 
