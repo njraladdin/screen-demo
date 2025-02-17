@@ -26,11 +26,10 @@ way for users to update software version, done
 
 UPDATE 3:
 ----
-refactor code
-add text timeline 
+refactor code, done 
+add text, done 
 
 
 fix background limit when zooming in
-Display keystrokes and keyboard shortcuts on screen
-add text 
+Display keystrokes and keyboard shortcuts on screen 
 record audio, trim audio 

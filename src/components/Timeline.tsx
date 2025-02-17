@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { VideoSegment, ZoomKeyframe } from '@/types/video';
+import { Type } from 'lucide-react';
 
 // Helper function to format time
 function formatTime(seconds: number): string {
@@ -30,9 +31,11 @@ interface TimelineProps {
   timelineRef: React.RefObject<HTMLDivElement>;
   videoRef: React.RefObject<HTMLVideoElement>;
   editingKeyframeId: number | null;
+  editingTextId: string | null;
   setCurrentTime: (time: number) => void;
   setEditingKeyframeId: (id: number | null) => void;
-  setActivePanel: (panel: 'zoom' | 'background' | 'cursor') => void;
+  setEditingTextId: (id: string | null) => void;
+  setActivePanel: (panel: 'zoom' | 'background' | 'cursor' | 'text') => void;
   setSegment: (segment: VideoSegment | null) => void;
 }
 
@@ -205,6 +208,58 @@ const Playhead: React.FC<{ currentTime: number; duration: number }> = ({ current
   </div>
 );
 
+const TextTrack: React.FC<{
+  segment: VideoSegment;
+  duration: number;
+  editingTextId: string | null;
+  isDraggingTextStart: boolean;
+  isDraggingTextEnd: boolean;
+  onTextClick: (id: string) => void;
+  onHandleDragStart: (id: string, type: 'start' | 'end') => void;
+}> = ({ segment, duration, editingTextId, isDraggingTextStart, isDraggingTextEnd, onTextClick, onHandleDragStart }) => (
+  <div className="absolute inset-x-0 bottom-14 h-8 bg-[#272729] rounded-lg">
+    {segment.textSegments?.map((text) => (
+      <div
+        key={text.id}
+        onClick={(e) => {
+          // Prevent click when dragging
+          if (!isDraggingTextStart && !isDraggingTextEnd) {
+            onTextClick(text.id);
+          }
+        }}
+        className={`absolute h-full cursor-pointer group ${
+          editingTextId === text.id ? 'bg-[#0079d3]/30' : 'bg-[#0079d3]/20 hover:bg-[#0079d3]/25'
+        }`}
+        style={{
+          left: `${(text.startTime / duration) * 100}%`,
+          width: `${((text.endTime - text.startTime) / duration) * 100}%`
+        }}
+      >
+        <div className="absolute inset-y-0 flex items-center justify-center w-full">
+          <div className="px-2 truncate text-xs font-medium text-[#d7dadc]">
+            {text.text}
+          </div>
+        </div>
+        {/* Drag handles */}
+        <div
+          className="absolute inset-y-0 left-0 w-1 cursor-ew-resize group-hover:bg-[#0079d3]"
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            onHandleDragStart(text.id, 'start');
+          }}
+        />
+        <div
+          className="absolute inset-y-0 right-0 w-1 cursor-ew-resize group-hover:bg-[#0079d3]"
+          onMouseDown={(e) => {
+            e.stopPropagation();
+            onHandleDragStart(text.id, 'end');
+          }}
+        />
+      </div>
+    ))}
+  </div>
+);
+
 export const Timeline: React.FC<TimelineProps> = ({
   duration,
   currentTime,
@@ -213,13 +268,18 @@ export const Timeline: React.FC<TimelineProps> = ({
   timelineRef,
   videoRef,
   editingKeyframeId,
+  editingTextId,
   setCurrentTime,
   setEditingKeyframeId,
+  setEditingTextId,
   setActivePanel,
   setSegment
 }) => {
   const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
   const [isDraggingTrimEnd, setIsDraggingTrimEnd] = useState(false);
+  const [isDraggingTextStart, setIsDraggingTextStart] = useState(false);
+  const [isDraggingTextEnd, setIsDraggingTextEnd] = useState(false);
+  const [draggingTextId, setDraggingTextId] = useState<string | null>(null);
 
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (isDraggingTrimStart || isDraggingTrimEnd) return;
@@ -286,6 +346,36 @@ export const Timeline: React.FC<TimelineProps> = ({
     setIsDraggingTrimEnd(false);
   };
 
+  const handleTextDrag = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDraggingTextStart && !isDraggingTextEnd || !draggingTextId || !segment) return;
+
+    const timeline = timelineRef.current;
+    if (!timeline) return;
+
+    const rect = timeline.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const newTime = (x / rect.width) * duration;
+
+    setSegment({
+      ...segment,
+      textSegments: segment.textSegments.map(text => {
+        if (text.id !== draggingTextId) return text;
+
+        if (isDraggingTextStart) {
+          return {
+            ...text,
+            startTime: Math.min(Math.max(0, newTime), text.endTime - 0.1)
+          };
+        } else {
+          return {
+            ...text,
+            endTime: Math.max(Math.min(duration, newTime), text.startTime + 0.1)
+          };
+        }
+      })
+    });
+  };
+
   return (
     <div className="relative h-48">
       <TimeMarkers duration={duration} />
@@ -293,9 +383,22 @@ export const Timeline: React.FC<TimelineProps> = ({
         ref={timelineRef}
         className="h-32 bg-[#1a1a1b] rounded-lg cursor-pointer relative mt-12"
         onClick={handleTimelineClick}
-        onMouseMove={handleTrimDrag}
-        onMouseUp={handleTrimDragEnd}
-        onMouseLeave={handleTrimDragEnd}
+        onMouseMove={(e) => {
+          handleTrimDrag(e);
+          handleTextDrag(e);
+        }}
+        onMouseUp={() => {
+          handleTrimDragEnd();
+          setIsDraggingTextStart(false);
+          setIsDraggingTextEnd(false);
+          setDraggingTextId(null);
+        }}
+        onMouseLeave={() => {
+          handleTrimDragEnd();
+          setIsDraggingTextStart(false);
+          setIsDraggingTextEnd(false);
+          setDraggingTextId(null);
+        }}
       >
         {segment && (
           <>
@@ -331,6 +434,24 @@ export const Timeline: React.FC<TimelineProps> = ({
                 onTrimDragStart={handleTrimDragStart}
               />
             </div>
+
+            {/* Text track */}
+            <TextTrack
+              segment={segment}
+              duration={duration}
+              editingTextId={editingTextId}
+              isDraggingTextStart={isDraggingTextStart}
+              isDraggingTextEnd={isDraggingTextEnd}
+              onTextClick={(id) => {
+                setEditingTextId(id);
+                setActivePanel('text');
+              }}
+              onHandleDragStart={(id, type) => {
+                setDraggingTextId(id);
+                if (type === 'start') setIsDraggingTextStart(true);
+                else setIsDraggingTextEnd(true);
+              }}
+            />
           </>
         )}
 

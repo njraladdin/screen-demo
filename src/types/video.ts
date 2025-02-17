@@ -10,10 +10,24 @@ export interface ZoomKeyframe {
   easingType: 'linear' | 'easeOut' | 'easeInOut';
 }
 
+export interface TextSegment {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  style: {
+    fontSize: number;
+    color: string;
+    position: 'top' | 'center' | 'bottom';
+    alignment: 'left' | 'center' | 'right';
+  };
+}
+
 export interface VideoSegment {
   trimStart: number;
   trimEnd: number;
   zoomKeyframes: ZoomKeyframe[];
+  textSegments: TextSegment[];
 }
 
 export interface BackgroundConfig {

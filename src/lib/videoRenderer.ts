@@ -1,4 +1,4 @@
-import { BackgroundConfig, MousePosition, VideoSegment, ZoomKeyframe } from '@/types/video';
+import { BackgroundConfig, MousePosition, VideoSegment, ZoomKeyframe, TextSegment } from '@/types/video';
 
 export interface RenderContext {
   video: HTMLVideoElement;
@@ -291,6 +291,15 @@ export class VideoRenderer {
         }
 
         this.backgroundConfig = context.backgroundConfig;
+
+        // Add text overlays
+        if (segment.textSegments) {
+          for (const textSegment of segment.textSegments) {
+            if (video.currentTime >= textSegment.startTime && video.currentTime <= textSegment.endTime) {
+              this.drawTextOverlay(ctx, textSegment, canvas.width, canvas.height);
+            }
+          }
+        }
 
     } finally {
         this.isDrawing = false;
@@ -752,13 +761,7 @@ export class VideoRenderer {
     cursorType: string
   ) {
     const lowerType = cursorType.toLowerCase();
-    console.log('Drawing cursor:', {
-      type: cursorType,
-      lowerType,
-      x,
-      y,
-      isClicked
-    });
+ 
 
     ctx.save();
     ctx.translate(x, y);
@@ -800,8 +803,6 @@ export class VideoRenderer {
         }
     }
 
-    // Add some debug logging
-    console.log('Drawing cursor type:', cursorType);
     
     switch (lowerType) {
       case 'text': {
@@ -872,6 +873,40 @@ export class VideoRenderer {
     const c1 = 1.70158;
     const c3 = c1 + 1;
     return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+  }
+
+  private drawTextOverlay(
+    ctx: CanvasRenderingContext2D,
+    textSegment: TextSegment,
+    width: number,
+    height: number
+  ) {
+    ctx.save();
+    
+    // Configure text style
+    ctx.font = `${textSegment.style.fontSize}px sans-serif`;
+    ctx.fillStyle = textSegment.style.color;
+    ctx.textAlign = textSegment.style.alignment;
+    
+    // Calculate position
+    let x = width / 2;
+    if (textSegment.style.alignment === 'left') x = 20;
+    if (textSegment.style.alignment === 'right') x = width - 20;
+    
+    let y = height / 2;
+    if (textSegment.style.position === 'top') y = textSegment.style.fontSize + 20;
+    if (textSegment.style.position === 'bottom') y = height - 20;
+    
+    // Add text shadow for better visibility
+    ctx.shadowColor = 'rgba(0,0,0,0.7)';
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetX = 2;
+    ctx.shadowOffsetY = 2;
+    
+    // Draw text
+    ctx.fillText(textSegment.text, x, y);
+    
+    ctx.restore();
   }
 }
 

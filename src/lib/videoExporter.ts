@@ -314,10 +314,9 @@ export class VideoExporter {
     }
   }
 
-  async exportAndDownload(options: ExportOptions): Promise<void> {
-    // Validate required properties
-    if (!options.video || !options.canvas || !options.tempCanvas || 
-        !options.segment || !options.backgroundConfig || !options.mousePositions) {
+  async exportAndDownload(options: ExportOptions) {
+    // Validate required options
+    if (!options.video || !options.canvas || !options.segment) {
       throw new Error('Missing required export options');
     }
 
@@ -326,12 +325,13 @@ export class VideoExporter {
         ...options,
         video: options.video,
         canvas: options.canvas,
-        tempCanvas: options.tempCanvas,
+        tempCanvas: options.tempCanvas!,
         segment: options.segment,
-        backgroundConfig: options.backgroundConfig,
-        mousePositions: options.mousePositions,
-        speed: options.speed
+        backgroundConfig: options.backgroundConfig!,
+        mousePositions: options.mousePositions || [],
+        speed: options.speed || 1
       });
+
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -340,9 +340,11 @@ export class VideoExporter {
       const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
       a.download = `processed_video_${Date.now()}.${extension}`;
       
+      document.body.appendChild(a);
       a.click();
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
     } catch (error) {
       console.error('[VideoExporter] Download failed:', error);
       throw error;

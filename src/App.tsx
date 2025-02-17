@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen, Upload, Wand2 } from "lucide-react";
+import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen, Upload, Wand2, Type } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
 import { videoRenderer } from '@/lib/videoRenderer';
-import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition, ExportOptions, Project } from '@/types/video';
+import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition, ExportOptions, Project, TextSegment } from '@/types/video';
 import { videoExporter, EXPORT_PRESETS, DIMENSION_PRESETS } from '@/lib/videoExporter';
 import { createVideoController } from '@/lib/videoController';
 import logo from '@/assets/logo.svg';
@@ -92,7 +92,7 @@ function App() {
   });
 
   // Add this state to toggle between panels
-  const [activePanel, setActivePanel] = useState<'zoom' | 'background' | 'cursor'>('zoom');
+  const [activePanel, setActivePanel] = useState<'zoom' | 'background' | 'cursor' | 'text'>('zoom');
 
   // Add these gradient constants
   const GRADIENT_PRESETS = {
@@ -730,11 +730,40 @@ function App() {
       const initialSegment: VideoSegment = {
         trimStart: 0,
         trimEnd: duration,
-        zoomKeyframes: []
+        zoomKeyframes: [],
+        textSegments: []
       };
       setSegment(initialSegment);
     }
   }, [duration, segment]);
+
+  // Add this state for text segments
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
+
+  // Add this function to handle adding new text segments
+  const handleAddText = () => {
+    if (!segment) return;
+    
+    const newText: TextSegment = {
+      id: crypto.randomUUID(),
+      startTime: currentTime,
+      endTime: Math.min(currentTime + 3, duration), // Default 3 second duration
+      text: 'New Text',
+      style: {
+        fontSize: 24,
+        color: '#ffffff',
+        position: 'center',
+        alignment: 'center'
+      }
+    };
+
+    setSegment({
+      ...segment,
+      textSegments: [...(segment.textSegments || []), newText]
+    });
+    setEditingTextId(newText.id);
+    setActivePanel('text');
+  };
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
@@ -886,6 +915,18 @@ function App() {
                 >
                   Cursor
                 </Button>
+                <Button 
+                  onClick={() => setActivePanel('text')} 
+                  variant={activePanel === 'text' ? 'default' : 'outline'} 
+                  size="sm" 
+                  className={`flex-1 ${
+                    activePanel === 'text' 
+                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
+                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
+                  }`}
+                >
+                  Text
+                </Button>
               </div>
 
               {activePanel === 'zoom' ? (
@@ -1022,7 +1063,7 @@ function App() {
                     </div>
                   </div>
                 </div>
-              ) : activePanel === 'cursor' && (
+              ) : activePanel === 'cursor' ? (
                 <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
                   <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Cursor Settings</h2>
                   <div className="space-y-4">
@@ -1057,6 +1098,132 @@ function App() {
                       />
                     </div>
                   </div>
+                </div>
+              ) : activePanel === 'text' && (
+                <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-base font-semibold text-[#d7dadc]">Text Overlay</h2>
+                    <Button
+                      onClick={handleAddText}
+                      className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white"
+                    >
+                      <Type className="w-4 h-4 mr-2" />Add Text
+                    </Button>
+                  </div>
+                  
+                  {editingTextId && segment?.textSegments?.find(t => t.id === editingTextId) ? (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Text Content</label>
+                        <textarea
+                          value={segment.textSegments.find(t => t.id === editingTextId)?.text}
+                          onChange={(e) => {
+                            if (!segment) return;
+                            setSegment({
+                              ...segment,
+                              textSegments: segment.textSegments.map(t =>
+                                t.id === editingTextId ? { ...t, text: e.target.value } : t
+                              )
+                            });
+                          }}
+                          className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
+                          rows={3}
+                        />
+                      </div>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Position</label>
+                          <select
+                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.position}
+                            onChange={(e) => {
+                              if (!segment) return;
+                              setSegment({
+                                ...segment,
+                                textSegments: segment.textSegments.map(t =>
+                                  t.id === editingTextId ? { ...t, style: { ...t.style, position: e.target.value as any } } : t
+                                )
+                              });
+                            }}
+                            className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
+                          >
+                            <option value="top">Top</option>
+                            <option value="center">Center</option>
+                            <option value="bottom">Bottom</option>
+                          </select>
+                        </div>
+                        
+                        <div>
+                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Alignment</label>
+                          <select
+                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.alignment}
+                            onChange={(e) => {
+                              if (!segment) return;
+                              setSegment({
+                                ...segment,
+                                textSegments: segment.textSegments.map(t =>
+                                  t.id === editingTextId ? { ...t, style: { ...t.style, alignment: e.target.value as any } } : t
+                                )
+                              });
+                            }}
+                            className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
+                          >
+                            <option value="left">Left</option>
+                            <option value="center">Center</option>
+                            <option value="right">Right</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Font Size</label>
+                        <input
+                          type="range"
+                          min="12"
+                          max="200"
+                          value={segment.textSegments.find(t => t.id === editingTextId)?.style.fontSize}
+                          onChange={(e) => {
+                            if (!segment) return;
+                            setSegment({
+                              ...segment,
+                              textSegments: segment.textSegments.map(t =>
+                                t.id === editingTextId ? { ...t, style: { ...t.style, fontSize: Number(e.target.value) } } : t
+                              )
+                            });
+                          }}
+                          className="w-full accent-[#0079d3]"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Color</label>
+                        <input
+                          type="color"
+                          value={segment.textSegments.find(t => t.id === editingTextId)?.style.color}
+                          onChange={(e) => {
+                            if (!segment) return;
+                            setSegment({
+                              ...segment,
+                              textSegments: segment.textSegments.map(t =>
+                                t.id === editingTextId ? { ...t, style: { ...t.style, color: e.target.value } } : t
+                              )
+                            });
+                          }}
+                          className="w-full bg-[#272729] border border-[#343536] rounded-md p-1"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6 flex flex-col items-center justify-center text-center">
+                      <div className="bg-[#272729] rounded-full p-3 mb-3">
+                        <Type className="w-6 h-6 text-[#818384]" />
+                      </div>
+                      <p className="text-[#d7dadc] font-medium">No Text Selected</p>
+                      <p className="text-[#818384] text-sm mt-1 max-w-[200px]">
+                        Add a new text overlay or select an existing one from the timeline
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1122,8 +1289,10 @@ function App() {
               timelineRef={timelineRef}
               videoRef={videoRef}
               editingKeyframeId={editingKeyframeId}
+              editingTextId={editingTextId}
               setCurrentTime={setCurrentTime}
               setEditingKeyframeId={setEditingKeyframeId}
+              setEditingTextId={setEditingTextId}
               setActivePanel={setActivePanel}
               setSegment={setSegment}
             />

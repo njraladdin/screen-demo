@@ -139,11 +139,13 @@ export class VideoController {
       if (this.renderOptions?.segment) {
         const { trimStart, trimEnd } = this.renderOptions.segment;
         
-        // If we've reached the end of the trimmed section, pause
+        // If we've reached the end of the trimmed section, pause and emit a custom event
         if (currentTime >= trimEnd) {
           this.video.pause();
           this.video.currentTime = trimEnd;
           this.setPlaying(false);
+          // Dispatch a custom event to signal end of playback
+          this.video.dispatchEvent(new Event('playbackcomplete'));
         }
         // If we're before the trim start, jump to trim start
         else if (currentTime < trimStart) {
@@ -433,9 +435,17 @@ export class VideoController {
     const initialSegment: VideoSegment = {
       trimStart: 0,
       trimEnd: this.duration,
-      zoomKeyframes: []
+      zoomKeyframes: [],
+      textSegments: []
     };
     return initialSegment;
+  }
+
+  // Add this new method
+  public isAtEnd(): boolean {
+    if (!this.renderOptions?.segment) return false;
+    const { trimEnd } = this.renderOptions.segment;
+    return Math.abs(this.video.currentTime - trimEnd) < 0.1; // Allow 0.1s tolerance
   }
 }
 
