@@ -10,6 +10,8 @@ import { createVideoController } from '@/lib/videoController';
 import logo from '@/assets/logo.svg';
 import { projectManager } from '@/lib/projectManager';
 import { autoZoomGenerator } from '@/lib/autoZoom';
+import { Timeline } from '@/components/Timeline';
+import { thumbnailGenerator } from '@/lib/thumbnailGenerator';
 
 // Replace the debounce utility with throttle
 const useThrottle = (callback: Function, limit: number) => {
@@ -60,281 +62,12 @@ const getKeyframeRange = (
   return { rangeStart, rangeEnd: keyframe.time };
 };
 
-// First, let's add these new components inside App.tsx, before the App component
-
-interface TimelineProps {
-  duration: number;
-  currentTime: number;
-  segment: VideoSegment | null;
-  thumbnails: string[];
-  timelineRef: React.RefObject<HTMLDivElement>;
-  onTimelineClick: (e: React.MouseEvent<HTMLDivElement>) => void;
-  onTrimDragStart: (type: 'start' | 'end') => void;
-  onTrimDrag: (e: React.MouseEvent<HTMLDivElement>) => void;
-  onTrimDragEnd: () => void;
-  editingKeyframeId: number | null;
-  setCurrentTime: (time: number) => void;
-  setEditingKeyframeId: (id: number | null) => void;
-  setActivePanel: (panel: 'zoom' | 'background' | 'cursor') => void;
-  videoRef: React.RefObject<HTMLVideoElement>;
-}
-
-const Timeline: React.FC<TimelineProps> = ({
-  duration,
-  currentTime,
-  segment,
-  thumbnails,
-  timelineRef,
-  onTimelineClick,
-  onTrimDragStart,
-  onTrimDrag,
-  onTrimDragEnd,
-  editingKeyframeId,
-  setCurrentTime,
-  setEditingKeyframeId,
-  setActivePanel,
-  videoRef
-}) => {
-  return (
-    <div className="relative h-48">
-      <TimeMarkers duration={duration} />
-      <div 
-        ref={timelineRef}
-        className="h-32 bg-[#1a1a1b] rounded-lg cursor-pointer relative mt-12"
-        onClick={onTimelineClick}
-        onMouseMove={onTrimDrag}
-        onMouseUp={onTrimDragEnd}
-        onMouseLeave={onTrimDragEnd}
-      >
-        {segment && (
-          <>
-            {/* Base track with thumbnails */}
-            <div className="absolute inset-x-0 bottom-0 h-12">
-              <VideoTrack 
-                segment={segment} 
-                duration={duration} 
-                thumbnails={thumbnails} 
-              />
-
-              {/* Zoom keyframes layer */}
-              <div className="absolute inset-0">
-                <ZoomKeyframes 
-                  segment={segment}
-                  duration={duration}
-                  editingKeyframeId={editingKeyframeId}
-                  onKeyframeClick={(time, index) => {
-                    if (videoRef.current) {
-                      videoRef.current.currentTime = time;
-                      setCurrentTime(time);
-                      setEditingKeyframeId(index);
-                      setActivePanel("zoom");
-                    }
-                  }}
-                />
-              </div>
-
-              {/* Trim handles */}
-              <TrimHandles 
-                segment={segment}
-                duration={duration}
-                onTrimDragStart={onTrimDragStart}
-              />
-            </div>
-          </>
-        )}
-
-        {/* Playhead */}
-        <Playhead 
-          currentTime={currentTime} 
-          duration={duration} 
-        />
-      </div>
-      
-      {/* Duration display */}
-      <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 text-sm text-[#818384]">
-        {segment ? formatTime(segment.trimEnd - segment.trimStart) : formatTime(duration)}
-      </div>
-    </div>
-  );
-};
-
-const TimeMarkers: React.FC<{ duration: number }> = ({ duration }) => (
-  <div className="absolute w-full flex justify-between text-xs text-[#d7dadc] z-40 pointer-events-none">
-    {Array.from({ length: 11 }).map((_, i) => {
-      const time = (duration * i) / 10;
-      return (
-        <div key={i} className="flex flex-col items-center">
-          <span className="mb-1">{formatTime(time)}</span>
-          <div className="h-2 w-0.5 bg-[#d7dadc]/20" />
-        </div>
-      );
-    })}
-  </div>
-);
-
-const VideoTrack: React.FC<{ segment: VideoSegment; duration: number; thumbnails: string[] }> = ({
-  segment,
-  duration,
-  thumbnails
-}) => (
-  <div className="absolute inset-0">
-    {/* Background track */}
-    <div className="absolute inset-0 bg-[#272729] rounded-lg overflow-hidden">
-      {/* Thumbnails */}
-      <div className="absolute inset-0 flex gap-[2px]">
-        {thumbnails.map((thumbnail, index) => (
-          <div 
-            key={index}
-            className="h-full flex-shrink-0"
-            style={{ 
-              width: `calc(${100 / thumbnails.length}% - 2px)`,
-              backgroundImage: `url(${thumbnail})`,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
-              opacity: 0.5
-            }}
-          />
-        ))}
-      </div>
-    </div>
-
-    {/* Trimmed sections */}
-    <div 
-      className="absolute inset-y-0 left-0 bg-black/50 rounded-l-lg" 
-      style={{ width: `${(segment.trimStart / duration) * 100}%` }} 
-    />
-    <div 
-      className="absolute inset-y-0 right-0 bg-black/50 rounded-r-lg" 
-      style={{ width: `${((duration - segment.trimEnd) / duration) * 100}%` }} 
-    />
-
-    {/* Active section */}
-    <div 
-      className="absolute inset-y-0 bg-white/2 border border-white/20"
-      style={{
-        left: `${(segment.trimStart / duration) * 100}%`,
-        right: `${((duration - segment.trimEnd) / duration) * 100}%`
-      }}
-    />
-  </div>
-);
-
-const ZoomKeyframes: React.FC<{ 
-  segment: VideoSegment; 
-  duration: number;
-  editingKeyframeId: number | null;
-  onKeyframeClick: (time: number, index: number) => void;
-}> = ({ segment, duration, editingKeyframeId, onKeyframeClick }) => (
-  <div className="absolute inset-x-0 h-full">
-    {segment.zoomKeyframes.map((keyframe, index) => {
-      const active = editingKeyframeId === index;
-      const { rangeStart, rangeEnd } = getKeyframeRange(segment.zoomKeyframes, index);
-
-      return (
-        <div key={index}>
-          {/* Gradient background for zoom range */}
-          <div
-            className={`absolute h-full cursor-pointer transition-colors border-r border-[#0079d3] ${
-              active ? "opacity-100" : "opacity-80"
-            }`}
-            style={{
-              left: `${(rangeStart / duration) * 100}%`,
-              width: `${((rangeEnd - rangeStart) / duration) * 100}%`,
-              zIndex: 20,
-              background: `linear-gradient(90deg, rgba(0, 121, 211, 0.1) 0%, rgba(0, 121, 211, ${
-                0.1 + (keyframe.zoomFactor - 1) * 0.3
-              }) 100%)`
-            }}
-          />
-          {/* Keyframe marker with label */}
-          <div
-            className="absolute cursor-pointer group"
-            style={{
-              left: `${(keyframe.time / duration) * 100}%`,
-              transform: "translateX(-50%)",
-              top: "-40px",
-              height: "64px"
-            }}
-            onClick={(e) => {
-              e.stopPropagation();
-              onKeyframeClick(keyframe.time, index);
-            }}
-          >
-            <div className="relative flex flex-col items-center">
-              <div
-                className={`px-2 py-1 mb-1 rounded-full text-xs font-medium whitespace-nowrap ${
-                  active ? "bg-[#0079d3] text-white" : "bg-[#0079d3]/20 text-[#0079d3]"
-                }`}
-              >
-                {Math.round((keyframe.zoomFactor - 1) * 100)}%
-              </div>
-              <div
-                className={`w-3 h-3 bg-[#0079d3] rounded-full hover:scale-125 transition-transform ${
-                  active ? "ring-2 ring-white" : ""
-                }`}
-              />
-              <div className="w-[1px] h-10 bg-[#0079d3]/30 group-hover:bg-[#0079d3]/50" />
-            </div>
-          </div>
-        </div>
-      );
-    })}
-  </div>
-);
-
-const TrimHandles: React.FC<{ 
-  segment: VideoSegment; 
-  duration: number;
-  onTrimDragStart: (type: 'start' | 'end') => void;
-}> = ({ segment, duration, onTrimDragStart }) => (
-  <>
-    <div 
-      className="absolute -top-2 -bottom-2 w-4 cursor-col-resize z-30 group"
-      style={{ left: `calc(${(segment.trimStart / duration) * 100}% - 8px)` }}
-      onMouseDown={() => onTrimDragStart('start')}
-    >
-      <div className="absolute inset-y-0 w-2 bg-white/80 group-hover:bg-[#0079d3] group-hover:w-2.5 transition-all rounded-full left-1/2 transform -translate-x-1/2" />
-      <div className="absolute inset-y-2 left-1/2 transform -translate-x-1/2 flex flex-col justify-center gap-1">
-        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
-        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
-      </div>
-    </div>
-
-    <div 
-      className="absolute -top-2 -bottom-2 w-4 cursor-col-resize z-30 group"
-      style={{ left: `calc(${(segment.trimEnd / duration) * 100}% - 8px)` }}
-      onMouseDown={() => onTrimDragStart('end')}
-    >
-      <div className="absolute inset-y-0 w-2 bg-white/80 group-hover:bg-[#0079d3] group-hover:w-2.5 transition-all rounded-full left-1/2 transform -translate-x-1/2" />
-      <div className="absolute inset-y-2 left-1/2 transform -translate-x-1/2 flex flex-col justify-center gap-1">
-        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
-        <div className="w-0.5 h-1 bg-black/40 rounded-full" />
-      </div>
-    </div>
-  </>
-);
-
-const Playhead: React.FC<{ currentTime: number; duration: number }> = ({ currentTime, duration }) => (
-  <div 
-    className="absolute top-0 bottom-0 flex flex-col items-center pointer-events-none z-30" 
-    style={{
-      left: `${(currentTime / duration) * 100}%`, 
-      transform: 'translateX(-50%)'
-    }}
-  >
-    <div className="w-4 h-3 bg-red-500 rounded-t" />
-    <div className="w-0.5 flex-1 bg-red-500" />
-  </div>
-);
-
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [isDraggingTrimStart, setIsDraggingTrimStart] = useState(false);
-  const [isDraggingTrimEnd, setIsDraggingTrimEnd] = useState(false);
   const [segment, setSegment] = useState<VideoSegment | null>(null);
   const [editingKeyframeId, setEditingKeyframeId] = useState<number | null>(null);
   const [zoomFactor, setZoomFactor] = useState(1.5);
@@ -501,8 +234,6 @@ function App() {
       setSegment(null);
       setZoomFactor(1.5);
       setEditingKeyframeId(null);
-      setIsDraggingTrimStart(false);
-      setIsDraggingTrimEnd(false);
       setThumbnails([]);
 
       // Clear previous video
@@ -551,62 +282,23 @@ function App() {
 
       const [videoUrl, mouseData] = await invoke<[string, MousePosition[]]>("stop_recording");
       setMousePositions(mouseData);
-      setLoadingProgress(25);
 
-      // Fetch the video data first
-      console.log('[App] Fetching video data from:', videoUrl);
-      const response = await fetch(videoUrl);
-      if (!response.ok) throw new Error('Failed to fetch video');
-      
-      // Show download progress
-      const reader = response.body!.getReader();
-      const contentLength = +(response.headers.get('Content-Length') ?? 0);
-      let receivedLength = 0;
-      const chunks = [];
+      // Use the new centralized video loading
+      const objectUrl = await videoControllerRef.current?.loadVideo({
+        videoUrl,
+        onLoadingProgress: (progress) => setLoadingProgress(progress)
+      });
 
-      while(true) {
-        const {done, value} = await reader.read();
-        if (done) break;
-        
-        chunks.push(value);
-        receivedLength += value.length;
-        const progress = Math.min(((receivedLength / contentLength) * 75), 75);
-        setLoadingProgress(25 + progress); // 25-100%
-      }
-
-      // Combine all chunks into a single Uint8Array
-      const videoData = new Uint8Array(receivedLength);
-      let position = 0;
-      for(const chunk of chunks) {
-        videoData.set(chunk, position);
-        position += chunk.length;
-      }
-
-      // Create blob and object URL
-      const blob = new Blob([videoData], { type: 'video/mp4' });
-      const objectUrl = URL.createObjectURL(blob);
-      setCurrentVideo(objectUrl);
-
-      if (videoRef.current) {
-        const video = videoRef.current;
-        
-        // Wait for video to be fully loaded
-        const handleCanPlayThrough = () => {
-          console.log('[App] Video can play through');
-          video.removeEventListener('canplaythrough', handleCanPlayThrough);
-          setIsVideoReady(true);
-          setIsLoadingVideo(false);
-          setLoadingProgress(100);
-          generateThumbnails();
-        };
-
-        video.addEventListener('canplaythrough', handleCanPlayThrough);
-        videoControllerRef.current?.handleVideoSourceChange(objectUrl);
+      if (objectUrl) {
+        setCurrentVideo(objectUrl);
+        setIsVideoReady(true);
+        generateThumbnails();
       }
 
     } catch (err) {
       console.error("❌ Failed to stop recording:", err);
       setError(err as string);
+    } finally {
       setIsLoadingVideo(false);
       setLoadingProgress(0);
     }
@@ -620,114 +312,6 @@ function App() {
       }
     };
   }, [currentVideo]);
-
-  // Initialize segment when video loads
-  useEffect(() => {
-    if (duration > 0 && !segment) {
-      const initialSegment: VideoSegment = {
-        trimStart: 0,
-        trimEnd: duration,
-        zoomKeyframes: []
-      };
-      setSegment(initialSegment);
-    }
-  }, [duration, segment]);
-
-  // Handle trim dragging
-  const handleTrimDrag = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDraggingTrimStart && !isDraggingTrimEnd) return;
-
-    const timeline = timelineRef.current;
-    if (!timeline || !segment) return;
-
-    const rect = timeline.getBoundingClientRect();
-    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-    const percent = x / rect.width;
-    const newTime = percent * duration;
-
-    if (isDraggingTrimStart) {
-      const newTrimStart = Math.min(newTime, segment.trimEnd - 0.1);
-      setSegment({
-        ...segment,
-        trimStart: Math.max(0, newTrimStart)
-      });
-      if (videoRef.current) {
-        videoRef.current.currentTime = newTime;
-      }
-    }
-
-    if (isDraggingTrimEnd) {
-      const newTrimEnd = Math.max(newTime, segment.trimStart + 0.1);
-      setSegment({
-        ...segment,
-        trimEnd: Math.min(duration, newTrimEnd)
-      });
-      if (videoRef.current) {
-        videoRef.current.currentTime = newTime;
-      }
-    }
-  };
-
-  // Update video playback to respect trim bounds and handle looping
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !segment) return;
-
-    const handleTimeUpdate = () => {
-      if (video.currentTime >= segment.trimEnd) {
-        // Instead of pausing, loop back to trim start
-        video.currentTime = segment.trimStart;
-        // Don't stop playback
-      } else if (video.currentTime < segment.trimStart) {
-        video.currentTime = segment.trimStart;
-      }
-    };
-
-    // Also handle the 'ended' event to loop
-    const handleEnded = () => {
-      if (isPlaying) {
-        video.currentTime = segment.trimStart;
-        video.play().catch(error => {
-          debugLog('Error restarting video:', error);
-          setIsPlaying(false);
-        });
-      }
-    };
-
-    if (video.currentTime < segment.trimStart || video.currentTime > segment.trimEnd) {
-      video.currentTime = segment.trimStart;
-    }
-
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('ended', handleEnded);
-
-    return () => {
-      video.removeEventListener('timeupdate', handleTimeUpdate);
-      video.removeEventListener('ended', handleEnded);
-    };
-  }, [segment, isPlaying]);
-
-  // Update the handleTimelineClick function
-  const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isDraggingTrimStart || isDraggingTrimEnd) return;
-
-    const timeline = timelineRef.current;
-    const video = videoRef.current;
-    if (!timeline || !video || !segment) return;
-
-    const rect = timeline.getBoundingClientRect();
-    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
-    const percent = x / rect.width;
-    const newTime = percent * duration;
-
-    // Only allow seeking within trimmed bounds
-    if (newTime >= segment.trimStart && newTime <= segment.trimEnd) {
-      videoControllerRef.current?.seek(newTime);
-      requestAnimationFrame(() => {
-        setCurrentTime(newTime);
-      });
-    }
-  };
 
   // Toggle play/pause
   const togglePlayPause = () => {
@@ -1068,7 +652,7 @@ function App() {
     await loadProjects();
   };
 
-  // Update handleLoadProject to set current project ID
+  // Update handleLoadProject to use loadVideo instead of handleVideoSourceChange
   const handleLoadProject = async (projectId: string) => {
     const project = await projectManager.loadProject(projectId);
     if (!project) return;
@@ -1079,62 +663,32 @@ function App() {
     }
     setThumbnails([]);
 
-    // Set up new video
-    const videoUrl = URL.createObjectURL(project.videoBlob);
-    setCurrentVideo(videoUrl);
+    // Create object URL from blob and load it
+    const objectUrl = URL.createObjectURL(project.videoBlob);
+    await videoControllerRef.current?.loadVideo({ videoUrl: objectUrl });
+    
+    setCurrentVideo(objectUrl);
     setSegment(project.segment);
     setBackgroundConfig(project.backgroundConfig);
     setMousePositions(project.mousePositions);
     setShowProjectsDialog(false);
     setCurrentProjectId(projectId);
-
-    // Update video controller
-    videoControllerRef.current?.handleVideoSourceChange(videoUrl);
   };
 
   // Add these states in App component
   const [thumbnails, setThumbnails] = useState<string[]>([]);
-  const thumbnailCanvasRef = useRef<HTMLCanvasElement>(document.createElement('canvas'));
 
-  // Add this new ref for the thumbnail video
-  const thumbnailVideoRef = useRef<HTMLVideoElement>(null);
-
-  // Update the generateThumbnails function
+  // Replace the existing generateThumbnails function
   const generateThumbnails = useCallback(async () => {
-    if (!currentVideo || !duration || !segment) return;
-
-    const thumbnailVideo = thumbnailVideoRef.current;
-    if (!thumbnailVideo) return;
-
-    thumbnailVideo.src = currentVideo;
-    thumbnailVideo.muted = true;
-
-    const canvas = thumbnailCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    canvas.width = 160;
-    canvas.height = 90;
-
-    await new Promise(r => thumbnailVideo.addEventListener('loadeddata', r, { once: true }));
-
-    // Generate 20 thumbnails evenly spread across the trimmed duration
-    const numThumbnails = 20;
-    const trimmedDuration = segment.trimEnd - segment.trimStart;
-    const interval = trimmedDuration / numThumbnails;
-    const newThumbnails: string[] = [];
-
-    for (let i = 0; i < numThumbnails; i++) {
-      const time = segment.trimStart + (i * interval);
-      thumbnailVideo.currentTime = time;
-      await new Promise(r => thumbnailVideo.addEventListener('seeked', r, { once: true }));
-      ctx.drawImage(thumbnailVideo, 0, 0, canvas.width, canvas.height);
-      newThumbnails.push(canvas.toDataURL('image/jpeg', 0.5));
-    }
-
-    setThumbnails(newThumbnails);
-    thumbnailVideo.src = ''; // Clean up
-  }, [currentVideo, duration, segment]);
+    if (!currentVideo || !segment) return;
+    
+    const thumbnails = await thumbnailGenerator.generateThumbnails(currentVideo, 20, {
+      trimStart: segment.trimStart,
+      trimEnd: segment.trimEnd
+    });
+    
+    setThumbnails(thumbnails);
+  }, [currentVideo, segment]);
 
   // Add this effect
   useEffect(() => {
@@ -1169,6 +723,18 @@ function App() {
       reader.readAsDataURL(file);
     }
   };
+
+  // Initialize segment when video loads
+  useEffect(() => {
+    if (duration > 0 && !segment) {
+      const initialSegment: VideoSegment = {
+        trimStart: 0,
+        trimEnd: duration,
+        zoomKeyframes: []
+      };
+      setSegment(initialSegment);
+    }
+  }, [duration, segment]);
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
@@ -1554,21 +1120,12 @@ function App() {
               segment={segment}
               thumbnails={thumbnails}
               timelineRef={timelineRef}
-              onTimelineClick={handleTimelineClick}
-              onTrimDragStart={(type) => {
-                if (type === 'start') setIsDraggingTrimStart(true);
-                else setIsDraggingTrimEnd(true);
-              }}
-              onTrimDrag={handleTrimDrag}
-              onTrimDragEnd={() => {
-                setIsDraggingTrimStart(false);
-                setIsDraggingTrimEnd(false);
-              }}
+              videoRef={videoRef}
               editingKeyframeId={editingKeyframeId}
               setCurrentTime={setCurrentTime}
               setEditingKeyframeId={setEditingKeyframeId}
               setActivePanel={setActivePanel}
-              videoRef={videoRef}
+              setSegment={setSegment}
             />
           </div>
         </div>
@@ -1840,15 +1397,6 @@ function App() {
           </div>
         </div>
       )}
-
-      {/* Add this near your other video element */}
-      <video 
-        ref={thumbnailVideoRef}
-        className="hidden"
-        playsInline
-        preload="auto"
-        crossOrigin="anonymous"
-      />
     </div>
   );
 }

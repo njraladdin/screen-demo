@@ -224,6 +224,17 @@ export class VideoExporter {
         const timeUpdateHandler = () => {
           if (recordingComplete || hasReachedEnd) return;
 
+          // Add check for trim end
+          if (video.currentTime >= segment.trimEnd) {
+            console.log('[VideoExporter] Reached trim end, completing export');
+            hasReachedEnd = true;
+            video.pause();
+            video.removeEventListener('timeupdate', timeUpdateHandler);
+            mediaRecorder.stop();
+            resolve();
+            return;
+          }
+
           // Simple loop detection - if time goes backwards, we've looped
           if (this.lastVideoTime > 0 && video.currentTime < this.lastVideoTime) {
             console.log('[VideoExporter] Detected video loop, completing export', {

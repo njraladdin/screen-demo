@@ -26,6 +26,11 @@ interface RenderOptions {
   mousePositions: MousePosition[];
 }
 
+interface LoadVideoOptions {
+  videoUrl: string;
+  onLoadingProgress?: (progress: number) => void;
+}
+
 export class VideoController {
   private video: HTMLVideoElement;
   private canvas: HTMLCanvasElement;
@@ -129,16 +134,24 @@ export class VideoController {
   private handleTimeUpdate = () => {
     if (!this.state.isSeeking) {
       const currentTime = this.video.currentTime;
-      const adjustedTime = this.getAdjustedTime(currentTime);
       
-      console.log('[VideoController] Time update', {
-        rawTime: currentTime,
-        adjustedTime,
-        playing: !this.video.paused,
-        readyState: this.video.readyState
-      });
+      // Add trim bounds handling
+      if (this.renderOptions?.segment) {
+        const { trimStart, trimEnd } = this.renderOptions.segment;
+        
+        // If we've reached the end of the trimmed section, pause
+        if (currentTime >= trimEnd) {
+          this.video.pause();
+          this.video.currentTime = trimEnd;
+          this.setPlaying(false);
+        }
+        // If we're before the trim start, jump to trim start
+        else if (currentTime < trimStart) {
+          this.video.currentTime = trimStart;
+        }
+      }
 
-      this.setCurrentTime(adjustedTime);
+      this.setCurrentTime(currentTime);
       this.renderFrame();
     }
   };
@@ -162,6 +175,18 @@ export class VideoController {
     
     if (this.video.duration !== Infinity) {
       this.setDuration(this.video.duration);
+      // Initialize segment if none exists
+      if (!this.renderOptions?.segment) {
+        this.renderOptions = {
+          segment: this.initializeSegment(),
+          backgroundConfig: {
+            scale: 100,
+            borderRadius: 8,
+            backgroundType: 'solid'
+          },
+          mousePositions: []
+        };
+      }
     }
   };
 
@@ -289,7 +314,63 @@ export class VideoController {
   public get duration() { return this.state.duration; }
 
   // Add this new method
-  public handleVideoSourceChange = (videoUrl: string) => {
+  public async loadVideo({ videoUrl, onLoadingProgress }: LoadVideoOptions): Promise<string> {
+    try {
+      // Reset states
+      this.setReady(false);
+      this.setSeeking(false);
+      this.setPlaying(false);
+      
+      // Clear previous video
+      this.video.pause();
+      this.video.removeAttribute('src');
+      this.video.load();
+
+      // Fetch the video data
+      console.log('[VideoController] Fetching video data from:', videoUrl);
+      const response = await fetch(videoUrl);
+      if (!response.ok) throw new Error('Failed to fetch video');
+      
+      // Show download progress
+      const reader = response.body!.getReader();
+      const contentLength = +(response.headers.get('Content-Length') ?? 0);
+      let receivedLength = 0;
+      const chunks = [];
+
+      while(true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        
+        chunks.push(value);
+        receivedLength += value.length;
+        const progress = Math.min(((receivedLength / contentLength) * 100), 100);
+        onLoadingProgress?.(progress);
+      }
+
+      // Combine chunks into a single Uint8Array
+      const videoData = new Uint8Array(receivedLength);
+      let position = 0;
+      for(const chunk of chunks) {
+        videoData.set(chunk, position);
+        position += chunk.length;
+      }
+
+      // Create blob and object URL
+      const blob = new Blob([videoData], { type: 'video/mp4' });
+      const objectUrl = URL.createObjectURL(blob);
+
+      // Load the video
+      await this.handleVideoSourceChange(objectUrl);
+      
+      return objectUrl;
+    } catch (error) {
+      console.error('[VideoController] Failed to load video:', error);
+      throw error;
+    }
+  }
+
+  // Update existing method to be private
+  private async handleVideoSourceChange(videoUrl: string): Promise<void> {
     if (!this.video || !this.canvas) return;
     
     // Reset states
@@ -327,7 +408,7 @@ export class VideoController {
       this.video.src = videoUrl;
       this.video.load(); // Explicitly load the video
     });
-  };
+  }
 
   // Add this new method to handle time adjustment
   private getAdjustedTime(time: number): number {
@@ -345,6 +426,16 @@ export class VideoController {
       : trimStart + relativeTime;
       
     return adjustedTime;
+  }
+
+  // Add new method
+  public initializeSegment(): VideoSegment {
+    const initialSegment: VideoSegment = {
+      trimStart: 0,
+      trimEnd: this.duration,
+      zoomKeyframes: []
+    };
+    return initialSegment;
   }
 }
 
