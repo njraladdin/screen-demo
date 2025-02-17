@@ -186,7 +186,7 @@ export class VideoExporter {
     let recordingComplete = false;
 
     try {
-      const recordingPromise = new Promise<Blob>((resolve) => {
+      const recordingPromise = new Promise<Blob>((resolve, reject) => {
         mediaRecorder.ondataavailable = (e) => {
           console.log('[VideoExporter] Data available:', { 
             size: e.data.size,
@@ -207,6 +207,23 @@ export class VideoExporter {
           const blob = new Blob(chunks, { type: mediaRecorder.mimeType });
           resolve(blob);
         };
+
+        mediaRecorder.addEventListener('dataavailable', (e) => {
+          console.log('[VideoExporter] Data chunk received:', {
+            size: e.data.size,
+            state: mediaRecorder.state,
+            videoTime: video.currentTime,
+            hasReachedEnd
+          });
+        });
+
+        mediaRecorder.addEventListener('stop', () => {
+          console.log('[VideoExporter] MediaRecorder stop event:', {
+            finalTime: video.currentTime,
+            recordingState: mediaRecorder.state,
+            hasReachedEnd
+          });
+        });
       });
 
       console.log('[VideoExporter] Starting MediaRecorder');
@@ -222,29 +239,47 @@ export class VideoExporter {
 
       await new Promise<void>((resolve, reject) => {
         const timeUpdateHandler = () => {
-          if (recordingComplete || hasReachedEnd) return;
+          console.log('[VideoExporter] Frame update:', {
+            currentTime: video.currentTime,
+            trimStart: segment.trimStart,
+            trimEnd: segment.trimEnd,
+            readyState: video.readyState,
+            duration: video.duration,
+            paused: video.paused,
+            playbackRate: video.playbackRate,
+            seeking: video.seeking,
+            ended: video.ended,
+            error: video.error,
+            networkState: video.networkState,
+          });
 
-          // Add check for trim end
-          if (video.currentTime >= segment.trimEnd) {
-            console.log('[VideoExporter] Reached trim end, completing export');
-            hasReachedEnd = true;
-            video.pause();
-            video.removeEventListener('timeupdate', timeUpdateHandler);
-            mediaRecorder.stop();
-            resolve();
+          if (recordingComplete || hasReachedEnd) {
+            console.log('[VideoExporter] Skipping frame - recording complete or ended');
             return;
           }
 
-          // Simple loop detection - if time goes backwards, we've looped
-          if (this.lastVideoTime > 0 && video.currentTime < this.lastVideoTime) {
-            console.log('[VideoExporter] Detected video loop, completing export', {
-              previousTime: this.lastVideoTime,
-              currentTime: video.currentTime
+          // Make the trim end check more precise and add more logging
+          if (Math.abs(video.currentTime - segment.trimEnd) < 0.1) {
+            console.log('[VideoExporter] Reached trim end (precise check):', {
+              currentTime: video.currentTime,
+              trimEnd: segment.trimEnd,
+              delta: video.currentTime - segment.trimEnd,
+              recordingState: mediaRecorder.state
             });
+
             hasReachedEnd = true;
             video.pause();
             video.removeEventListener('timeupdate', timeUpdateHandler);
-            mediaRecorder.stop();
+            
+            // Force final data collection before stopping
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.requestData();
+              setTimeout(() => {
+                console.log('[VideoExporter] Stopping MediaRecorder after final data');
+                mediaRecorder.stop();
+              }, 100);
+            }
+            
             resolve();
             return;
           }
@@ -280,6 +315,9 @@ export class VideoExporter {
         };
 
         video.addEventListener('timeupdate', timeUpdateHandler);
+        video.addEventListener('ended', () => {
+          console.log('[VideoExporter] Video ended event fired');
+        });
         video.addEventListener('error', (e) => {
           console.error('[VideoExporter] Video error:', e);
           reject(e);

@@ -683,11 +683,7 @@ export class VideoRenderer {
     // Find the exact position for the current time
     const exactMatch = positions.find(pos => Math.abs(pos.timestamp - currentTime) < 0.001);
     if (exactMatch) {
-      console.log('Exact match found:', {
-        time: currentTime,
-        cursor_type: exactMatch.cursor_type,
-        pos: exactMatch
-      });
+
       return {
         x: exactMatch.x,
         y: exactMatch.y,
@@ -727,13 +723,7 @@ export class VideoRenderer {
     const prev = positions[nextIndex - 1];
     const next = positions[nextIndex];
     const t = (currentTime - prev.timestamp) / (next.timestamp - prev.timestamp);
-    console.log('Interpolating between:', {
-      time: currentTime,
-      prev_type: prev.cursor_type,
-      next_type: next.cursor_type,
-      prev,
-      next
-    });
+
 
     return {
       x: prev.x + (next.x - prev.x) * t,
@@ -810,7 +800,7 @@ export class VideoRenderer {
     
     switch (lowerType) {
       case 'text': {
-        console.log('Drawing TEXT cursor');
+
         ctx.translate(-6, -8);
         
         // I-beam cursor with more detailed shape
@@ -830,7 +820,7 @@ export class VideoRenderer {
       }
       
       case 'pointer': {
-        console.log('Drawing POINTER cursor with image, applying offset');
+
         // If the pointer image is loaded, draw it. Use fallback dimensions if necessary.
         let imgWidth = 24, imgHeight = 24;
         if (this.pointerImage.complete && this.pointerImage.naturalWidth > 0) {
@@ -848,7 +838,7 @@ export class VideoRenderer {
       }
       
       default: {
-        console.log('Drawing DEFAULT cursor');
+
         ctx.translate(-8, -5);
         const mainArrow = new Path2D('M 8.2 4.9 L 19.8 16.5 L 13 16.5 L 12.6 16.6 L 8.2 20.9 Z');
         const clickIndicator = new Path2D('M 17.3 21.6 L 13.7 23.1 L 9 12 L 12.7 10.5 Z');
@@ -948,7 +938,12 @@ export class VideoRenderer {
     }
   }
 
-  public handleMouseMove(e: MouseEvent, segment: VideoSegment, canvas: HTMLCanvasElement, onTextMove: (id: string, x: number, y: number) => void) {
+  public handleMouseMove(
+    e: MouseEvent, 
+    _segment: VideoSegment,
+    canvas: HTMLCanvasElement, 
+    onTextMove: (id: string, x: number, y: number) => void
+  ) {
     if (!this.isDraggingText || !this.draggedTextId) return;
 
     const rect = canvas.getBoundingClientRect();

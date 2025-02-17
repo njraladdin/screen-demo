@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { VideoSegment, ZoomKeyframe } from '@/types/video';
-import { Type } from 'lucide-react';
 
 // Helper function to format time
 function formatTime(seconds: number): string {
@@ -221,7 +220,7 @@ const TextTrack: React.FC<{
     {segment.textSegments?.map((text) => (
       <div
         key={text.id}
-        onClick={(e) => {
+        onClick={() => {
           // Prevent click when dragging
           if (!isDraggingTextStart && !isDraggingTextEnd) {
             onTextClick(text.id);

@@ -245,7 +245,7 @@ export class VideoController {
     if (this.video.readyState >= 2) {
       videoRenderer.drawFrame(renderContext);
     } else {
-      console.log('[VideoController] Skipping frame - video not ready');
+     // console.log('[VideoController] Skipping frame - video not ready');
     }
   }
 
