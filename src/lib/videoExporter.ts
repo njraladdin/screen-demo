@@ -59,7 +59,6 @@ export const DIMENSION_PRESETS: Record<DimensionPreset, DimensionPresetConfig> =
 
 export class VideoExporter {
   private isExporting = false;
-  private lastVideoTime = 0;  // Add this to track video time
 
   private setupMediaRecorder(stream: MediaStream, quality: ExportQuality): MediaRecorder {
     // Try different MIME types in order of preference
@@ -130,7 +129,6 @@ export class VideoExporter {
     });
 
     this.isExporting = true;
-    this.lastVideoTime = 0;  // Reset at start
     let hasReachedEnd = false;
     const { video, canvas, tempCanvas, segment } = options;
     
@@ -186,7 +184,7 @@ export class VideoExporter {
     let recordingComplete = false;
 
     try {
-      const recordingPromise = new Promise<Blob>((resolve, reject) => {
+      const recordingPromise = new Promise<Blob>((resolve) => {
         mediaRecorder.ondataavailable = (e) => {
           console.log('[VideoExporter] Data available:', { 
             size: e.data.size,
@@ -284,8 +282,6 @@ export class VideoExporter {
             return;
           }
 
-          this.lastVideoTime = video.currentTime;
-
           const renderContext = {
             video,
             canvas,
@@ -340,7 +336,6 @@ export class VideoExporter {
       }
       
       stream.getTracks().forEach(track => track.stop());
-      this.lastVideoTime = 0;  // Reset in cleanup
       this.isExporting = false;
 
       // Restore video state

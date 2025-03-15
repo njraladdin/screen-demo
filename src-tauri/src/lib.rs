@@ -153,22 +153,35 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         unsafe {
             VIDEO_PATH = Some(video_path.to_string_lossy().to_string());
         }
+        println!("Setting video output path: {}", video_path.display());
 
         // Clear previous video data
         if let Ok(mut data) = VIDEO_DATA.lock() {
             *data = None;
         }
 
-        // Create encoder
+        // Create encoder with very conservative settings
+        println!("Creating encoder with resolution: {}x{}", width, height);
+        
+        // Always use full resolution
+        let encode_width = width;
+        let encode_height = height;
+        
+        println!("Using full resolution: {}x{}", encode_width, encode_height);
+        
+        // Use reasonable encoder settings with higher bitrate for better quality
+        let video_settings = VideoSettingsBuilder::new(encode_width, encode_height)
+            .frame_rate(30) // Higher frame rate for smoother video
+            .bitrate(10_000_000); // Higher bitrate for better quality at full resolution
+
         let encoder = VideoEncoder::new(
-            VideoSettingsBuilder::new(width, height)
-                .frame_rate(120)
-                .bitrate(50_000_000), // Reduced bitrate for faster processing
+            video_settings,
             AudioSettingsBuilder::default().disabled(true),
             ContainerSettingsBuilder::default(),
             &video_path,
         )?;
 
+        println!("Encoder created successfully");
         ENCODER_ACTIVE.store(true, Ordering::SeqCst);
 
         Ok(Self {
@@ -266,7 +279,15 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
                 e
             );
             println!("Frame details: size={}x{}", frame.width(), frame.height());
-            return Err(e.into());
+            
+            // Check if this is a critical error or we can continue
+            if self.frame_count < 100 {
+                // If errors happen during the first few frames, they're likely critical
+                return Err(e.into());
+            } else {
+                // For later frames, log the error but try to continue
+                println!("Attempting to continue encoding despite error...");
+            }
         }
 
         // Capture mouse position every 16ms (approximately 60fps)
@@ -312,13 +333,113 @@ impl GraphicsCaptureApiHandler for CaptureHandler {
         if SHOULD_STOP.load(Ordering::SeqCst) {
             println!("Stopping capture and finalizing encoder...");
             if let Some(encoder) = self.encoder.take() {
+                // First, disable the encoder active flag to prevent any more frames from being sent
                 ENCODER_ACTIVE.store(false, Ordering::SeqCst);
-                if let Err(e) = encoder.finish() {
-                    println!("Error finishing encoder: {}", e);
-                }
+                
+                // Get the current path where video is being saved
+                let video_path = unsafe {
+                    if let Some(path) = &VIDEO_PATH {
+                        path.clone()
+                    } else {
+                        println!("Error: No video path available during encoder shutdown");
+                        ENCODING_FINISHED.store(true, Ordering::SeqCst);
+                        capture_control.stop();
+                        return Ok(());
+                    }
+                };
+                
+                println!("Video being saved to: {}", video_path);
+                
+                // Use a separate thread with a timeout for finalization
+                thread::spawn(move || {
+                    println!("Attempting to finalize encoder with safety timeout...");
+                    
+                    // Create a channel to communicate when encoder.finish() completes
+                    let (tx, rx) = mpsc::channel();
+                    
+                    // Check if the file exists and has content before we even try to finalize
+                    let pre_finalize_size = match std::fs::metadata(&video_path) {
+                        Ok(metadata) => {
+                            let size = metadata.len();
+                            println!("Pre-finalization file size: {} bytes ({:.2} MB)", 
+                                size, size as f64 / (1024.0 * 1024.0));
+                            size
+                        },
+                        Err(e) => {
+                            println!("Error checking file before finalization: {}", e);
+                            0
+                        }
+                    };
+                    
+                    // If we already have some data in the file, we might be able to use it
+                    let has_usable_data = pre_finalize_size > 1024 * 1024; // More than 1MB
+                    
+                    // Spawn another thread that will actually call encoder.finish()
+                    thread::spawn(move || {
+                        println!("Encoder finalization worker thread started");
+                        let result = encoder.finish();
+                        // Send the result back, don't care if receiver is gone
+                        let _ = tx.send(result);
+                        println!("Encoder finalization worker thread completed");
+                    });
+                    
+                    // Use a much shorter timeout if we already have usable data
+                    let timeout = if has_usable_data {
+                        std::time::Duration::from_secs(5) // Short timeout if we have data
+                    } else {
+                        std::time::Duration::from_secs(10) // Longer timeout if we need finalization
+                    };
+                    
+                    println!("Waiting up to {}s for encoder to finalize...", timeout.as_secs());
+                    
+                    // Wait for finish() to complete with a timeout
+                    match rx.recv_timeout(timeout) {
+                        Ok(Ok(_)) => {
+                            println!("Encoder successfully finalized");
+                        }
+                        Ok(Err(e)) => {
+                            println!("Encoder returned an error during finalization: {}", e);
+                            println!("Will attempt to use the partially encoded video");
+                        }
+                        Err(e) => {
+                            println!("Timeout or error waiting for encoder to finalize: {}", e);
+                            println!("The encoder worker thread may still be running - proceeding with current file regardless");
+                        }
+                    }
+                    
+                    // Signal that encoding is finished regardless of the outcome
+                    ENCODING_FINISHED.store(true, Ordering::SeqCst);
+                    
+                    // Check if the video file exists and has a reasonable size
+                    match std::fs::metadata(&video_path) {
+                        Ok(metadata) => {
+                            let size = metadata.len();
+                            if size > 0 {
+                                println!("Video file created successfully: {} bytes ({:.2} MB)", 
+                                    size, size as f64 / (1024.0 * 1024.0));
+                                
+                                if size > pre_finalize_size {
+                                    println!("File grew by {} bytes during finalization", size - pre_finalize_size);
+                                } else if size == pre_finalize_size {
+                                    println!("File size did not change during finalization");
+                                }
+                            } else {
+                                println!("Warning: Video file exists but has zero size");
+                            }
+                        },
+                        Err(e) => {
+                            println!("Warning: Unable to access video file after recording: {}", e);
+                        }
+                    }
+                });
+            } else {
+                // If encoder was already taken
                 ENCODING_FINISHED.store(true, Ordering::SeqCst);
             }
+            
+            // Stop the capture immediately, don't wait for encoding
             capture_control.stop();
+            println!("Capture stopped successfully");
         }
 
         Ok(())
@@ -408,33 +529,50 @@ async fn get_monitors() -> Result<Vec<MonitorInfo>, String> {
 fn cleanup_resources() {
     println!("Cleaning up resources...");
 
+    // Make sure encoder is no longer active
+    ENCODER_ACTIVE.store(false, Ordering::SeqCst);
+    
+    // Ensure encoding is marked as finished to prevent deadlocks
+    ENCODING_FINISHED.store(true, Ordering::SeqCst);
+
     // Clean up any running servers
     if let Ok(mut ports) = SERVER_PORTS.lock() {
-        ports.clear();
+        if !ports.is_empty() {
+            println!("Cleaning up {} server ports", ports.len());
+            ports.clear();
+        }
     }
 
     // First, drop the memory map
     {
         let mut mmap = VIDEO_MMAP.lock();
-        *mmap = None;
+        if mmap.is_some() {
+            println!("Releasing memory map");
+            *mmap = None;
+        }
     }
 
     // Reset all state flags
     RECORDING.store(false, Ordering::SeqCst);
     SHOULD_STOP.store(false, Ordering::SeqCst);
-    ENCODING_FINISHED.store(false, Ordering::SeqCst);
-    ENCODER_ACTIVE.store(false, Ordering::SeqCst);
+    
+    // Clear mouse positions
+    if let Ok(mut positions) = MOUSE_POSITIONS.lock() {
+        positions.clear();
+    }
 
     // Signal click listener to stop
     SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
-
+    
+    // Note: we don't clear VIDEO_PATH here because the server might still need it
+    
     println!("Resource cleanup completed");
 }
 
 // Modify start_recording
 #[tauri::command]
-async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
-    println!("Starting recording with monitor_id: {:?}", monitor_id);
+async fn start_recording(monitor_id: Option<String>, quality: Option<String>) -> Result<(), String> {
+    println!("Starting recording with monitor_id: {:?}, quality: {:?}", monitor_id, quality);
 
     // First, ensure any previous recording is fully cleaned up
     if RECORDING.load(Ordering::SeqCst) {
@@ -453,7 +591,37 @@ async fn start_recording(monitor_id: Option<String>) -> Result<(), String> {
         positions.clear();
         println!("Cleared previous mouse positions");
     }
-
+    
+    // Parse the quality setting
+    let quality_setting = match quality.as_deref() {
+        Some("high") => {
+            println!("Using high quality encoding");
+            "high"
+        }
+        Some("medium") => { 
+            println!("Using medium quality encoding");
+            "medium"
+        }
+        Some("low") => {
+            println!("Using low quality encoding");
+            "low"
+        }
+        _ => {
+            println!("No quality specified, defaulting to high quality");
+            "high"
+        }
+    };
+    
+    // Store quality setting in a thread-local for the encoder to access
+    // (Note: we still set this for future use, but currently ignore it to always use full resolution)
+    thread_local! {
+        static QUALITY_SETTING: std::cell::RefCell<&'static str> = std::cell::RefCell::new("high");
+    }
+    
+    QUALITY_SETTING.with(|quality| {
+        *quality.borrow_mut() = "high"; // Always use high quality
+    });
+    
     let monitor = if let Some(ref id) = monitor_id {
         println!("Trying to get monitor with ID: {}", id);
         let index = id.parse::<usize>().map_err(|e| {
@@ -583,14 +751,67 @@ async fn get_video_chunk(chunk_index: usize) -> Result<String, String> {
 
 // Initialize the memory map when recording stops
 fn init_video_mmap() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Initializing video memory map...");
     unsafe {
         if let Some(path) = &VIDEO_PATH {
-            let file = File::open(path)?;
-            let mmap = Mmap::map(&file)?;
-            *VIDEO_MMAP.lock() = Some(Arc::new(mmap));
+            println!("Trying to open video file at: {}", path);
+            
+            // Make multiple attempts to open the file
+            const MAX_ATTEMPTS: usize = 3;
+            let mut last_error = None;
+            
+            for attempt in 1..=MAX_ATTEMPTS {
+                match File::open(path) {
+                    Ok(file) => {
+                        match file.metadata() {
+                            Ok(metadata) => {
+                                let file_size = metadata.len();
+                                println!("File opened (attempt {}/{}), size: {} bytes", 
+                                    attempt, MAX_ATTEMPTS, file_size);
+                                
+                                match Mmap::map(&file) {
+                                    Ok(mmap) => {
+                                        println!("Memory map created successfully, size: {} bytes", mmap.len());
+                                        *VIDEO_MMAP.lock() = Some(Arc::new(mmap));
+                                        return Ok(());
+                                    },
+                                    Err(e) => {
+                                        println!("Failed to create memory map (attempt {}/{}): {}", 
+                                            attempt, MAX_ATTEMPTS, e);
+                                        last_error = Some(e);
+                                        // Try again after a short delay
+                                        thread::sleep(std::time::Duration::from_millis(200));
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                println!("Failed to get file metadata (attempt {}/{}): {}", 
+                                    attempt, MAX_ATTEMPTS, e);
+                                last_error = Some(e.into());
+                                thread::sleep(std::time::Duration::from_millis(200));
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        println!("Failed to open file (attempt {}/{}): {}", 
+                            attempt, MAX_ATTEMPTS, e);
+                        last_error = Some(e.into());
+                        thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                }
+            }
+            
+            // If we've tried multiple times and still failed, return the last error
+            if let Some(e) = last_error {
+                return Err(Box::new(e));
+            } else {
+                return Err("Failed to open video file after multiple attempts".into());
+            }
+        } else {
+            println!("No video path available for memory mapping");
+            return Err("No video path available".into());
         }
     }
-    Ok(())
 }
 
 // Modify the CORS headers function to handle both dev and prod environments
@@ -616,6 +837,25 @@ fn add_cors_headers<R: std::io::Read>(response: &mut Response<R>) {
 fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Error>> {
     println!("Starting video server for: {}", video_path);
 
+    // Verify file exists and is readable first
+    let file_size = match std::fs::metadata(&video_path) {
+        Ok(metadata) => {
+            let size = metadata.len();
+            println!("Video file verified: {} bytes ({:.2} MB)", 
+                size, 
+                size as f64 / (1024.0 * 1024.0)
+            );
+            
+            if size == 0 {
+                return Err("Video file exists but is empty".into());
+            }
+            size
+        }
+        Err(e) => {
+            return Err(format!("Cannot access video file: {}", e).into());
+        }
+    };
+
     // Clean up old ports first
     if let Ok(mut ports) = SERVER_PORTS.lock() {
         ports.clear();
@@ -624,6 +864,7 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
     // Try ports starting from 8000
     let mut port = 8000;
     let server = loop {
+        println!("Trying to bind server to port {}", port);
         match Server::http(format!("127.0.0.1:{}", port)) {
             Ok(server) => {
                 println!("Server started on port {}", port);
@@ -645,93 +886,111 @@ fn start_video_server(video_path: String) -> Result<u16, Box<dyn std::error::Err
     PORT.store(port, Ordering::SeqCst);
 
     thread::spawn(move || {
-        println!("Opening video file...");
-        let file = File::open(&video_path)
-            .map_err(|e| {
-                println!("Failed to open video file: {}", e);
-                e
-            })
-            .unwrap();
-
-        println!("Getting file metadata...");
-        let file_size = file
-            .metadata()
-            .map_err(|e| {
-                println!("Failed to get file metadata: {}", e);
-                e
-            })
-            .unwrap()
-            .len();
-        println!("File size: {} bytes", file_size);
-
-        for request in server.incoming_requests() {
-            println!("Received request");
-            // Handle OPTIONS preflight request
-            if request.method() == &tiny_http::Method::Options {
-                println!("Handling OPTIONS request");
-                let mut response = Response::empty(204);
-                add_cors_headers(&mut response); // Use the new function
-                let _ = request.respond(response);
-                continue;
-            }
-
-            println!("Handling {} request", request.method());
-            // Handle range request
-            let mut start = 0;
-            let mut end = file_size - 1;
-
-            if let Some(range_header) = request
-                .headers()
-                .iter()
-                .find(|h| h.field.as_str() == "Range")
-            {
-                if let Ok(range_str) = std::str::from_utf8(range_header.value.as_bytes()) {
-                    if let Some(range) = range_str.strip_prefix("bytes=") {
-                        let parts: Vec<&str> = range.split('-').collect();
-                        if parts.len() == 2 {
-                            start = parts[0].parse::<u64>().unwrap_or(0);
-                            end = parts[1].parse::<u64>().unwrap_or(file_size - 1);
+        println!("Opening video file for serving...");
+        match File::open(&video_path) {
+            Ok(file) => {
+                // Get the current file size again in case it changed
+                let file_size = match file.metadata() {
+                    Ok(metadata) => metadata.len(),
+                    Err(_) => file_size, // Fall back to the previously measured size
+                };
+                
+                println!("Video file opened successfully: {} bytes", file_size);
+            
+                for request in server.incoming_requests() {
+                    println!("Received request: {} {}", 
+                        request.method(), 
+                        request.url()
+                    );
+                    
+                    // Handle OPTIONS preflight request
+                    if request.method() == &tiny_http::Method::Options {
+                        println!("Handling OPTIONS request");
+                        let mut response = Response::empty(204);
+                        add_cors_headers(&mut response);
+                        let _ = request.respond(response);
+                        continue;
+                    }
+                    
+                    // Handle range request
+                    let mut start = 0;
+                    let mut end = file_size - 1;
+                    
+                    if let Some(range_header) = request
+                        .headers()
+                        .iter()
+                        .find(|h| h.field.as_str() == "Range")
+                    {
+                        if let Ok(range_str) = std::str::from_utf8(range_header.value.as_bytes()) {
+                            println!("Range request: {}", range_str);
+                            if let Some(range) = range_str.strip_prefix("bytes=") {
+                                let parts: Vec<&str> = range.split('-').collect();
+                                if parts.len() == 2 {
+                                    start = parts[0].parse::<u64>().unwrap_or(0);
+                                    end = parts[1].parse::<u64>().unwrap_or(file_size - 1);
+                                }
+                            }
+                        }
+                    }
+                    
+                    println!("Serving range: bytes {}-{}/{}", start, end, file_size);
+                    
+                    match file.try_clone() {
+                        Ok(mut file_clone) => {
+                            if let Err(e) = file_clone.seek(std::io::SeekFrom::Start(start)) {
+                                println!("Error seeking in file: {}", e);
+                                let _ = request.respond(Response::empty(500));
+                                continue;
+                            }
+                            
+                            let mut response = Response::new(
+                                if start == 0 {
+                                    StatusCode(200)
+                                } else {
+                                    StatusCode(206)
+                                },
+                                vec![],
+                                Box::new(file_clone.take(end - start + 1)),
+                                Some((end - start + 1) as usize),
+                                None,
+                            );
+                            
+                            add_cors_headers(&mut response);
+                            
+                            // Add content type header
+                            response.add_header(
+                                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"video/mp4"[..]).unwrap(),
+                            );
+                            
+                            // Add headers for range requests
+                            if start != 0 {
+                                response.add_header(
+                                    tiny_http::Header::from_bytes(
+                                        &b"Content-Range"[..],
+                                        format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
+                                    )
+                                    .unwrap(),
+                                );
+                            }
+                            
+                            match request.respond(response) {
+                                Ok(_) => println!("Response sent successfully"),
+                                Err(e) => println!("Error sending response: {}", e),
+                            }
+                        }
+                        Err(e) => {
+                            println!("Error cloning file: {}", e);
+                            let _ = request.respond(Response::empty(500));
                         }
                     }
                 }
             }
-
-            let mut file = file.try_clone().unwrap();
-            file.seek(std::io::SeekFrom::Start(start)).unwrap();
-            let mut response = Response::new(
-                if start == 0 {
-                    StatusCode(200)
-                } else {
-                    StatusCode(206)
-                },
-                vec![],
-                Box::new(file.take(end - start + 1)),
-                Some((end - start + 1) as usize),
-                None,
-            );
-
-            add_cors_headers(&mut response); // Use the new function
-
-            // Add content type header
-            response.add_header(
-                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"video/mp4"[..]).unwrap(),
-            );
-
-            // Add headers...
-            if start != 0 {
-                response.add_header(
-                    tiny_http::Header::from_bytes(
-                        &b"Content-Range"[..],
-                        format!("bytes {}-{}/{}", start, end, file_size).as_bytes(),
-                    )
-                    .unwrap(),
-                );
+            Err(e) => {
+                println!("Failed to open video file for serving: {}", e);
+                // Server will exit if we can't open the file
             }
-
-            let _ = request.respond(response);
-            println!("Response sent");
         }
-        println!("Server thread ended");
+        println!("Video server thread ended");
     });
 
     Ok(port)
@@ -774,25 +1033,10 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
         return Err("Not recording".to_string());
     }
 
-    // Signal capture to stop
+    // Signal capture to stop 
     SHOULD_STOP.store(true, Ordering::SeqCst);
-
-    // Wait for encoder to finish with timeout
-    let start = Instant::now();
-    while !ENCODING_FINISHED.load(Ordering::SeqCst) {
-        thread::sleep(std::time::Duration::from_millis(100));
-        if start.elapsed().as_secs() > 5 {
-            println!("Timeout waiting for encoder, forcing cleanup...");
-            cleanup_resources();
-            return Err("Timeout waiting for encoder to finish".to_string());
-        }
-    }
-
-    // Stop mouse tracking
-    SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
-    IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
-
-    // Get the video path
+    
+    // Get the video path first, in case it gets cleared during cleanup
     let video_path = unsafe {
         if let Some(path) = &VIDEO_PATH {
             path.clone()
@@ -801,8 +1045,88 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
             return Err("No video path available".to_string());
         }
     };
-
-    // Start the video server with the temp file
+    
+    println!("Expecting video at: {}", video_path);
+    
+    // Check if the file already exists before waiting for encoder
+    let pre_wait_file_exists = match std::fs::metadata(&video_path) {
+        Ok(metadata) => {
+            let size = metadata.len();
+            println!("Video file already exists with size: {} bytes ({:.2} MB)", 
+                size, size as f64 / (1024.0 * 1024.0));
+            size > 0
+        },
+        Err(_) => {
+            println!("Video file does not exist yet, will wait for encoder");
+            false
+        }
+    };
+    
+    // If file already exists with content, don't wait as long
+    let max_wait_time = if pre_wait_file_exists {
+        println!("Using shorter wait time since video file already exists");
+        std::time::Duration::from_secs(5)
+    } else {
+        println!("Using standard wait time for encoder");
+        std::time::Duration::from_secs(15)
+    };
+    
+    // Wait for encoder to finish or timeout
+    let start = Instant::now();
+    let mut last_status_time = start;
+    
+    while !ENCODING_FINISHED.load(Ordering::SeqCst) && start.elapsed() < max_wait_time {
+        // Check status and print progress every second
+        if last_status_time.elapsed().as_secs() >= 1 {
+            println!("Waiting for encoder to finish or timeout... ({}/{}s)", 
+                start.elapsed().as_secs(), max_wait_time.as_secs());
+            
+            // Check if the file is growing
+            if let Ok(metadata) = std::fs::metadata(&video_path) {
+                let size = metadata.len();
+                println!("Current video file size: {} bytes ({:.2} MB)", 
+                    size, size as f64 / (1024.0 * 1024.0));
+            }
+            
+            last_status_time = Instant::now();
+        }
+        
+        thread::sleep(std::time::Duration::from_millis(250));
+    }
+    
+    if !ENCODING_FINISHED.load(Ordering::SeqCst) {
+        println!("Encoder still running after {}s - proceeding with current file state", start.elapsed().as_secs());
+    } else {
+        println!("Encoder finished within timeout period ({}s)", start.elapsed().as_secs());
+    }
+    
+    // Check if video file exists and is non-empty
+    let file_exists = match std::fs::metadata(&video_path) {
+        Ok(metadata) => {
+            let size = metadata.len();
+            println!("Final video file size: {} bytes ({:.2} MB)", 
+                size, size as f64 / (1024.0 * 1024.0));
+            size > 0
+        }
+        Err(e) => {
+            println!("Error checking video file: {}", e);
+            false
+        }
+    };
+    
+    if !file_exists {
+        println!("No usable video file found, cleaning up");
+        cleanup_resources();
+        return Err("No usable video file was created. The recording may have failed.".to_string());
+    }
+    
+    // Stop mouse tracking 
+    SHOULD_LISTEN_CLICKS.store(false, Ordering::SeqCst);
+    IS_MOUSE_CLICKED.store(false, Ordering::SeqCst);
+    
+    // Regardless of encoder state, try to serve the file
+    println!("Attempting to serve video file from: {}", video_path);
+    
     match start_video_server(video_path) {
         Ok(port) => {
             println!("Server started successfully on port {}", port);
@@ -813,6 +1137,8 @@ async fn stop_recording(_: tauri::AppHandle) -> Result<(String, Vec<MousePositio
             } else {
                 Vec::new()
             };
+            
+            // Don't clean up resources here, as we need the file to remain available
             Ok((format!("http://localhost:{}", port), mouse_positions))
         }
         Err(e) => {
