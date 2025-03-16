@@ -26,14 +26,15 @@ export interface TextSegment {
 export interface VideoSegment {
   trimStart: number;
   trimEnd: number;
-  zoomKeyframes: ZoomKeyframe[];
   textSegments: TextSegment[];
 }
+
+export type BackgroundType = 'solid' | 'gradient1' | 'gradient2' | 'gradient3' | 'custom';
 
 export interface BackgroundConfig {
   scale: number;
   borderRadius: number;
-  backgroundType: 'solid' | 'gradient1' | 'gradient2' | 'gradient3' | 'custom';
+  backgroundType: BackgroundType;
   shadow?: number;
   cursorScale?: number;
   cursorSmoothness?: number;

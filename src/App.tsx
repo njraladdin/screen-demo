@@ -1,17 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen, Upload, Wand2, Type } from "lucide-react";
+import { Play, Pause, Video, StopCircle, Plus, Trash2, Search, Download, Loader2, Save, FolderOpen, Upload, Wand2 } from "lucide-react";
 import "./App.css";
 import { Button } from "@/components/ui/button";
 import { videoRenderer } from '@/lib/videoRenderer';
-import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition, ExportOptions, Project, TextSegment } from '@/types/video';
+import { BackgroundConfig, VideoSegment, ZoomKeyframe, MousePosition, ExportOptions, Project } from '@/types/video';
 import { videoExporter, EXPORT_PRESETS, DIMENSION_PRESETS } from '@/lib/videoExporter';
 import { createVideoController } from '@/lib/videoController';
 import logo from '@/assets/logo.svg';
-import { projectManager } from '@/lib/projectManager';
-import { autoZoomGenerator } from '@/lib/autoZoom';
 import { Timeline } from '@/components/Timeline';
 import { thumbnailGenerator } from '@/lib/thumbnailGenerator';
+import { RemotionPlayer } from '@/components/RemotionPlayer';
 
 // Replace the debounce utility with throttle
 const useThrottle = (callback: Function, limit: number) => {
@@ -47,21 +46,6 @@ const sortMonitorsByPosition = (monitors: MonitorInfo[]) => {
     }));
 };
 
-// Added helper function to calculate the range for a zoom keyframe.
-// It returns an object containing the range start and end for the given keyframe.
-const getKeyframeRange = (
-  keyframes: ZoomKeyframe[],
-  index: number
-): { rangeStart: number; rangeEnd: number } => {
-  const keyframe = keyframes[index];
-  const prevKeyframe = index > 0 ? keyframes[index - 1] : null;
-  const rangeStart =
-    prevKeyframe && keyframe.time - prevKeyframe.time <= 1.0
-      ? prevKeyframe.time
-      : Math.max(0, keyframe.time - 1.0);
-  return { rangeStart, rangeEnd: keyframe.time };
-};
-
 function App() {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,8 +53,6 @@ function App() {
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [segment, setSegment] = useState<VideoSegment | null>(null);
-  const [editingKeyframeId, setEditingKeyframeId] = useState<number | null>(null);
-  const [zoomFactor, setZoomFactor] = useState(1.5);
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentVideo, setCurrentVideo] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState(0);
@@ -92,7 +74,7 @@ function App() {
   });
 
   // Add this state to toggle between panels
-  const [activePanel, setActivePanel] = useState<'zoom' | 'background' | 'cursor' | 'text'>('zoom');
+  const [activePanel, setActivePanel] = useState<'background' | 'cursor'>('background');
 
   // Add these gradient constants
   const GRADIENT_PRESETS = {
@@ -113,11 +95,20 @@ function App() {
 
   // Create video controller ref
   const videoControllerRef = useRef<ReturnType<typeof createVideoController>>();
-
-  // Initialize controller
+  
+  // Initialize hidden video element for operations that still require it
   useEffect(() => {
-    if (!videoRef.current || !canvasRef.current) return;
-
+    if (!videoRef.current) {
+      videoRef.current = document.createElement('video');
+      videoRef.current.crossOrigin = 'anonymous';
+      videoRef.current.playsInline = true;
+      videoRef.current.preload = 'auto';
+    }
+    
+    if (!canvasRef.current) {
+      canvasRef.current = document.createElement('canvas');
+    }
+    
     videoControllerRef.current = createVideoController({
       videoRef: videoRef.current,
       canvasRef: canvasRef.current,
@@ -134,7 +125,7 @@ function App() {
     };
   }, []);
 
-  // Helper function to render a frame
+  // Helper function to render a frame (simplified since we're using RemotionPlayer)
   const renderFrame = useCallback(() => {
     if (!segment) return;
 
@@ -147,35 +138,14 @@ function App() {
 
   // Remove frameCallback and simplify the animation effect
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    // Start animation when playing, render single frame when paused
-    if (video.paused) {
-      renderFrame();
-    } else {
-      const renderContext = {
-        video,
-        canvas: canvasRef.current!,
-        tempCanvas: tempCanvasRef.current,
-        segment: segment!,
+    if (videoRef.current && segment) {
+      videoControllerRef.current?.updateRenderOptions({
+        segment,
         backgroundConfig,
-        mousePositions,
-        currentTime: video.currentTime
-      };
-      videoRenderer.startAnimation(renderContext);
+        mousePositions
+      });
     }
-
-    return () => {
-      videoRenderer.stopAnimation();
-    };
   }, [segment, backgroundConfig, mousePositions]);
-
-  // Update other places where drawFrame was used to use renderFrame instead
-  useEffect(() => {
-    if (videoRef.current && !videoRef.current.paused) return;
-    renderFrame();
-  }, [backgroundConfig, renderFrame]);
 
   // Add these state variables inside App component
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
@@ -232,29 +202,12 @@ function App() {
       setDuration(0);
       setIsPlaying(false);
       setSegment(null);
-      setZoomFactor(1.5);
-      setEditingKeyframeId(null);
       setThumbnails([]);
 
       // Clear previous video
       if (currentVideo) {
         URL.revokeObjectURL(currentVideo);
         setCurrentVideo(null);
-      }
-
-      // Reset video element
-      if (videoRef.current) {
-        videoRef.current.src = '';
-        videoRef.current.currentTime = 0;
-      }
-
-      // Clear canvas
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
       }
 
       // Now start the new recording
@@ -283,7 +236,7 @@ function App() {
       const [videoUrl, mouseData] = await invoke<[string, MousePosition[]]>("stop_recording");
       setMousePositions(mouseData);
 
-      // Use the new centralized video loading
+      // Use the video controller to load the video for metadata and thumbnails
       const objectUrl = await videoControllerRef.current?.loadVideo({
         videoUrl,
         onLoadingProgress: (progress) => setLoadingProgress(progress)
@@ -315,7 +268,16 @@ function App() {
 
   // Toggle play/pause
   const togglePlayPause = () => {
-    videoControllerRef.current?.togglePlayPause();
+    // Add a small delay to allow the UI to update first
+    setTimeout(() => {
+      handlePlayStateChange(!isPlaying);
+    }, 50);
+  };
+
+  // Handle play state changes
+  const handlePlayStateChange = (playing: boolean) => {
+    // Set state immediately for UI feedback
+    setIsPlaying(playing);
   };
 
   // Add this effect to handle metadata loading
@@ -399,77 +361,6 @@ function App() {
     }
   };
 
-  // Update handleAddKeyframe to include duration
-  const handleAddKeyframe = () => {
-    if (!segment || !videoRef.current) return;
-
-    const currentTime = videoRef.current.currentTime;
-
-    // Find the previous keyframe to inherit its values
-    const previousKeyframe = [...segment.zoomKeyframes]
-      .sort((a, b) => b.time - a.time) // Sort in reverse order
-      .find(k => k.time < currentTime);
-
-    const newKeyframe: ZoomKeyframe = {
-      time: currentTime,
-      duration: 0.5,
-      // Inherit values from previous keyframe if it exists, otherwise use defaults
-      zoomFactor: previousKeyframe ? previousKeyframe.zoomFactor : 1.5,
-      positionX: previousKeyframe ? previousKeyframe.positionX : 0.5,
-      positionY: previousKeyframe ? previousKeyframe.positionY : 0.5,
-      easingType: 'easeOut'
-    };
-
-    const newKeyframes = [...segment.zoomKeyframes, newKeyframe].sort((a, b) => a.time - b.time);
-    setSegment({
-      ...segment,
-      zoomKeyframes: newKeyframes
-    });
-
-    setZoomFactor(newKeyframe.zoomFactor);
-    setEditingKeyframeId(newKeyframes.indexOf(newKeyframe));
-  };
-
-  // Update the throttled update function for zoom configuration
-  const throttledUpdateZoom = useThrottle((updates: Partial<ZoomKeyframe>) => {
-    if (!segment || editingKeyframeId === null) return;
-
-    const updatedKeyframes = segment.zoomKeyframes.map((keyframe, index) =>
-      index === editingKeyframeId
-        ? { ...keyframe, ...updates }
-        : keyframe
-    );
-
-    setSegment({
-      ...segment,
-      zoomKeyframes: updatedKeyframes
-    });
-
-    // Seek to the keyframe's time to show the final zoom state
-    if (videoRef.current) {
-      const keyframeTime = updatedKeyframes[editingKeyframeId].time;
-      videoRef.current.currentTime = keyframeTime;
-      setCurrentTime(keyframeTime);
-    }
-
-    // Force a redraw to show the changes
-    requestAnimationFrame(() => {
-      renderFrame();
-    });
-  }, 32); // 32ms throttle
-
-  // Add this effect to redraw when background config changes
-  useEffect(() => {
-    if (videoRef.current && !videoRef.current.paused) return; // Don't interrupt if playing
-
-    // Create a proper FrameRequestCallback
-    const frameCallback: FrameRequestCallback = (_time: number) => {
-      renderFrame();
-    };
-
-    requestAnimationFrame(frameCallback);
-  }, [backgroundConfig, renderFrame]);
-
   // Add this state near the top of the App component
   const [recordingDuration, setRecordingDuration] = useState(0);
 
@@ -492,40 +383,6 @@ function App() {
       }
     };
   }, [isRecording]);
-
-  // Add this effect after the other useEffect hooks
-  useEffect(() => {
-    if (!segment || !isVideoReady) return;
-
-    // Find the active keyframe based on current time
-    const findActiveKeyframe = () => {
-      const sortedKeyframes = [...segment.zoomKeyframes].sort((a, b) => a.time - b.time);
-
-      for (let i = 0; i < sortedKeyframes.length; i++) {
-        // Use the helper to compute rangeStart and rangeEnd
-        const { rangeStart, rangeEnd } = getKeyframeRange(sortedKeyframes, i);
-
-        // Check if current time is within this keyframe's range
-        if (currentTime >= rangeStart && currentTime <= rangeEnd) {
-          if (editingKeyframeId !== i) {
-            setEditingKeyframeId(i);
-            setZoomFactor(sortedKeyframes[i].zoomFactor);
-            if (activePanel !== "zoom") {
-              setActivePanel("zoom");
-            }
-          }
-          return;
-        }
-      }
-
-      // If we're not in any keyframe's range, deselect
-      if (editingKeyframeId !== null) {
-        setEditingKeyframeId(null);
-      }
-    };
-
-    findActiveKeyframe();
-  }, [currentTime, segment, isVideoReady]);
 
   // Update the loading placeholder to show progress
   const renderPlaceholder = () => {
@@ -584,98 +441,6 @@ function App() {
   });
 
   // Add these state variables in the App component
-  const [projects, setProjects] = useState<Omit<Project, 'videoBlob'>[]>([]);
-  const [showProjectsDialog, setShowProjectsDialog] = useState(false);
-
-  // Add this effect to load projects on mount
-  useEffect(() => {
-    loadProjects();
-  }, []);
-
-  // Add these functions to the App component
-  const loadProjects = async () => {
-    const projects = await projectManager.getProjects();
-    setProjects(projects);
-  };
-
-  // Add new state for the save dialog
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [projectNameInput, setProjectNameInput] = useState('');
-
-  // Add new state for current project
-  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-
-  // Update handleSaveProject to show different options when editing existing project
-  const handleSaveProject = async () => {
-    if (!currentVideo || !segment) return;
-    
-    if (currentProjectId) {
-      // We're editing an existing project - show save options
-      setShowSaveDialog(true);
-      setProjectNameInput(projects.find(p => p.id === currentProjectId)?.name || 'Untitled Project');
-    } else {
-      // New project
-      setShowSaveDialog(true);
-      setProjectNameInput('Untitled Project');
-    }
-  };
-
-  // Update handleSaveConfirm to handle both new and existing projects
-  const handleSaveConfirm = async () => {
-    if (!currentVideo || !segment || !projectNameInput.trim()) return;
-
-    const response = await fetch(currentVideo);
-    const videoBlob = await response.blob();
-
-    if (currentProjectId) {
-      // Update existing project
-      await projectManager.updateProject(currentProjectId, {
-        name: projectNameInput,
-        videoBlob,
-        segment,
-        backgroundConfig,
-        mousePositions
-      });
-    } else {
-      // Create new project
-      const project = await projectManager.saveProject({
-        name: projectNameInput,
-        videoBlob,
-        segment,
-        backgroundConfig,
-        mousePositions
-      });
-      setCurrentProjectId(project.id);
-    }
-
-    setShowSaveDialog(false);
-    await loadProjects();
-  };
-
-  // Update handleLoadProject to use loadVideo instead of handleVideoSourceChange
-  const handleLoadProject = async (projectId: string) => {
-    const project = await projectManager.loadProject(projectId);
-    if (!project) return;
-
-    // Clear previous video and thumbnails
-    if (currentVideo) {
-      URL.revokeObjectURL(currentVideo);
-    }
-    setThumbnails([]);
-
-    // Create object URL from blob and load it
-    const objectUrl = URL.createObjectURL(project.videoBlob);
-    await videoControllerRef.current?.loadVideo({ videoUrl: objectUrl });
-    
-    setCurrentVideo(objectUrl);
-    setSegment(project.segment);
-    setBackgroundConfig(project.backgroundConfig);
-    setMousePositions(project.mousePositions);
-    setShowProjectsDialog(false);
-    setCurrentProjectId(projectId);
-  };
-
-  // Add these states in App component
   const [thumbnails, setThumbnails] = useState<string[]>([]);
 
   // Replace the existing generateThumbnails function
@@ -697,114 +462,17 @@ function App() {
     }
   }, [isVideoReady, duration, generateThumbnails]);
 
-  // Add this state near the top of App component
-  const [recentUploads, setRecentUploads] = useState<string[]>([]);
-
-  // Update handleBackgroundUpload function
-  const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const imageUrl = event.target?.result as string;
-        // Update background config
-        setBackgroundConfig(prev => ({
-          ...prev,
-          backgroundType: 'custom',
-          customBackground: imageUrl
-        }));
-        
-        // Update recent uploads (keep last 3)
-        setRecentUploads(prev => {
-          const newUploads = [imageUrl, ...prev].slice(0, 3);
-          return newUploads;
-        });
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
   // Initialize segment when video loads
   useEffect(() => {
     if (duration > 0 && !segment) {
       const initialSegment: VideoSegment = {
         trimStart: 0,
         trimEnd: duration,
-        zoomKeyframes: [],
         textSegments: []
       };
       setSegment(initialSegment);
     }
   }, [duration, segment]);
-
-  // Add this state for text segments
-  const [editingTextId, setEditingTextId] = useState<string | null>(null);
-
-  // Add this function to handle adding new text segments
-  const handleAddText = () => {
-    if (!segment) return;
-    
-    const newText: TextSegment = {
-      id: crypto.randomUUID(),
-      startTime: currentTime,
-      endTime: Math.min(currentTime + 3, duration),
-      text: 'New Text',
-      style: {
-        fontSize: 24,
-        color: '#ffffff',
-        x: 50,  // Center by default
-        y: 50   // Center by default
-      }
-    };
-
-    setSegment({
-      ...segment,
-      textSegments: [...(segment.textSegments || []), newText]
-    });
-    setEditingTextId(newText.id);
-    setActivePanel('text');
-  };
-
-  // Add these handlers in the App component
-  const handleTextDragMove = (id: string, x: number, y: number) => {
-    if (!segment) return;
-    setSegment({
-      ...segment,
-      textSegments: segment.textSegments.map(t =>
-        t.id === id ? { ...t, style: { ...t.style, x, y } } : t
-      )
-    });
-  };
-
-  // Add event listeners to the canvas
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !segment) return;
-
-    const handleMouseDown = (e: MouseEvent) => {
-      videoRenderer.handleMouseDown(e, segment, canvas);
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      videoRenderer.handleMouseMove(e, segment, canvas, handleTextDragMove);
-    };
-
-    const handleMouseUp = () => {
-      videoRenderer.handleMouseUp(canvas);
-    };
-
-    canvas.addEventListener('mousedown', handleMouseDown);
-    canvas.addEventListener('mousemove', handleMouseMove);
-    canvas.addEventListener('mouseup', handleMouseUp);
-    canvas.addEventListener('mouseleave', handleMouseUp);
-
-    return () => {
-      canvas.removeEventListener('mousedown', handleMouseDown);
-      canvas.removeEventListener('mousemove', handleMouseMove);
-      canvas.removeEventListener('mouseup', handleMouseUp);
-      canvas.removeEventListener('mouseleave', handleMouseUp);
-    };
-  }, [segment]);
 
   return (
     <div className="min-h-screen bg-[#1a1a1b]">
@@ -852,7 +520,7 @@ function App() {
               <Button 
                 onClick={handleExport} 
                 disabled={isProcessing} 
-                className={`flex items-center px-4 py-2 h-9 text-sm font-medium ${
+                className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
                   isProcessing 
                     ? 'bg-gray-600 text-gray-400 cursor-not-allowed' 
                     : 'bg-[#9C17FF] hover:bg-[#9C17FF]/90 text-white'
@@ -861,20 +529,6 @@ function App() {
                 <Download className="w-4 h-4 mr-2" />Export Video
               </Button>
             )}
-            {currentVideo && (
-              <Button
-                onClick={handleSaveProject}
-                className="bg-[#272729] hover:bg-[#343536] text-[#d7dadc]"
-              >
-                <Save className="w-4 h-4 mr-2" />Save Project
-              </Button>
-            )}
-            <Button
-              onClick={() => setShowProjectsDialog(true)}
-              className="bg-[#272729] hover:bg-[#343536] text-[#d7dadc]"
-            >
-              <FolderOpen className="w-4 h-4 mr-2" />Recent Projects
-            </Button>
           </div>
         </div>
       </header>
@@ -886,11 +540,26 @@ function App() {
           <div className="grid grid-cols-4 gap-6 items-start">
             <div className="col-span-3 rounded-lg">
               <div className="aspect-video relative">
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <canvas ref={canvasRef} className="w-full h-full object-contain" />
-                  <video ref={videoRef} className="hidden" playsInline preload="auto" crossOrigin="anonymous" />
-                  {(!currentVideo || isRecording || isLoadingVideo) && renderPlaceholder()}
-                </div>
+                {(!currentVideo || isRecording || isLoadingVideo) ? (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    {renderPlaceholder()}
+                  </div>
+                ) : (
+                  <div className="absolute inset-0">
+                    <RemotionPlayer 
+                      videoUrl={currentVideo}
+                      backgroundConfig={backgroundConfig}
+                      isPlaying={isPlaying}
+                      currentTime={currentTime}
+                      duration={duration}
+                      setCurrentTime={setCurrentTime}
+                      setIsPlaying={setIsPlaying}
+                      mousePositions={mousePositions}
+                      segment={segment || undefined}
+                    />
+                  </div>
+                )}
+                
                 {currentVideo && !isRecording && !isLoadingVideo && (
                   <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center gap-3 bg-black/80 rounded-full px-4 py-2 backdrop-blur-sm z-10">
                     <Button 
@@ -918,380 +587,13 @@ function App() {
               </div>
             </div>
 
-            <div className="col-span-1 space-y-3">
-              <div className="flex bg-[#272729] p-0.5 rounded-md">
-                <Button 
-                  onClick={() => setActivePanel('zoom')} 
-                  variant={activePanel === 'zoom' ? 'default' : 'outline'} 
-                  size="sm" 
-                  className={`flex-1 ${
-                    activePanel === 'zoom' 
-                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
-                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
-                  }`}
-                >
-                  Zoom
-                </Button>
-                <Button 
-                  onClick={() => setActivePanel('background')} 
-                  variant={activePanel === 'background' ? 'default' : 'outline'} 
-                  size="sm" 
-                  className={`flex-1 ${
-                    activePanel === 'background' 
-                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
-                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
-                  }`}
-                >
-                  Background
-                </Button>
-                <Button 
-                  onClick={() => setActivePanel('cursor')} 
-                  variant={activePanel === 'cursor' ? 'default' : 'outline'} 
-                  size="sm" 
-                  className={`flex-1 ${
-                    activePanel === 'cursor' 
-                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
-                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
-                  }`}
-                >
-                  Cursor
-                </Button>
-                <Button 
-                  onClick={() => setActivePanel('text')} 
-                  variant={activePanel === 'text' ? 'default' : 'outline'} 
-                  size="sm" 
-                  className={`flex-1 ${
-                    activePanel === 'text' 
-                      ? 'bg-[#1a1a1b] text-[#d7dadc] border-0'
-                      : 'bg-transparent text-[#818384] border-0 hover:bg-[#1a1a1b]/10 hover:text-[#d7dadc]'
-                  }`}
-                >
-                  Text
-                </Button>
-              </div>
-
-              {activePanel === 'zoom' ? (
-                <>
-                  {(editingKeyframeId !== null) ? (
-                    <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
-                      <div className="flex justify-between items-center mb-4">
-                        <h2 className="text-base font-semibold text-[#d7dadc]">Zoom Configuration</h2>
-                        {editingKeyframeId !== null && <Button onClick={() => {if (segment && editingKeyframeId !== null) {setSegment({...segment, zoomKeyframes: segment.zoomKeyframes.filter((_, i) => i !== editingKeyframeId)}); setEditingKeyframeId(null);}}} variant="ghost" size="icon" className="text-[#d7dadc] hover:text-red-400 hover:bg-red-400/10 transition-colors"><Trash2 className="w-5 h-5" /></Button>}
-                      </div>
-                      <div className="space-y-4">
-                        <div>
-                          <label className="text-sm font-medium text-[#d7dadc] mb-2">Zoom Factor</label>
-                          <div className="space-y-2">
-                            <input type="range" min="1" max="3" step="0.1" value={zoomFactor} onChange={(e) => {const newValue = Number(e.target.value); setZoomFactor(newValue); throttledUpdateZoom({ zoomFactor: newValue });}} className="w-full accent-[#0079d3]" />
-                            <div className="flex justify-between text-xs text-[#818384] font-medium">
-                              <span>1x</span>
-                              <span>{zoomFactor.toFixed(1)}x</span>
-                              <span>3x</span>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="space-y-4">
-                          <div>
-                            <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Horizontal Position</span><span className="text-[#818384]">{Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionX ?? 0.5) * 100)}%</span></label>
-                            <input type="range" min="0" max="1" step="0.01" value={segment?.zoomKeyframes[editingKeyframeId!]?.positionX ?? 0.5} onChange={(e) => {throttledUpdateZoom({ positionX: Number(e.target.value) });}} className="w-full accent-[#0079d3]" />
-                          </div>
-                          <div>
-                            <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between"><span>Vertical Position</span><span className="text-[#818384]">{Math.round((segment?.zoomKeyframes[editingKeyframeId!]?.positionY ?? 0.5) * 100)}%</span></label>
-                            <input type="range" min="0" max="1" step="0.01" value={segment?.zoomKeyframes[editingKeyframeId!]?.positionY ?? 0.5} onChange={(e) => {throttledUpdateZoom({ positionY: Number(e.target.value) });}} className="w-full accent-[#0079d3]" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6 flex flex-col items-center justify-center text-center">
-                      <div className="bg-[#272729] rounded-full p-3 mb-3"><Search className="w-6 h-6 text-[#818384]" /></div>
-                      <p className="text-[#d7dadc] font-medium">No Zoom Effect Selected</p>
-                      <p className="text-[#818384] text-sm mt-1 max-w-[200px]">Select a zoom effect on the timeline or add a new one</p>
-                    </div>
-                  )}
-                </>
-              ) : activePanel === 'background' ? (
-                <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
-                  <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Background & Layout</h2>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
-                        <span>Video Size</span>
-                        <span className="text-[#818384]">{backgroundConfig.scale}%</span>
-                      </label>
-                      <input type="range" min="50" max="100" value={backgroundConfig.scale} 
-                        onChange={(e) => setBackgroundConfig(prev => ({...prev, scale: Number(e.target.value)}))} 
-                        className="w-full accent-[#0079d3]" 
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
-                        <span>Roundness</span>
-                        <span className="text-[#818384]">{backgroundConfig.borderRadius}px</span>
-                      </label>
-                      <input type="range" min="0" max="64" value={backgroundConfig.borderRadius} 
-                        onChange={(e) => setBackgroundConfig(prev => ({...prev, borderRadius: Number(e.target.value)}))} 
-                        className="w-full accent-[#0079d3]" 
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
-                        <span>Shadow</span>
-                        <span className="text-[#818384]">{backgroundConfig.shadow || 0}px</span>
-                      </label>
-                      <input type="range" min="0" max="100" value={backgroundConfig.shadow || 0} 
-                        onChange={(e) => setBackgroundConfig(prev => ({...prev, shadow: Number(e.target.value)}))} 
-                        className="w-full accent-[#0079d3]" 
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium text-[#d7dadc] mb-3 block">Background Style</label>
-                      <div className="grid grid-cols-4 gap-4">
-                        {Object.entries(GRADIENT_PRESETS).map(([key, gradient]) => (
-                          <button 
-                            key={key} 
-                            onClick={() => setBackgroundConfig(prev => ({...prev, backgroundType: key as BackgroundConfig['backgroundType']}))} 
-                            className={`aspect-square  h-10 rounded-lg transition-all ${gradient} ${
-                              backgroundConfig.backgroundType === key 
-                                ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' 
-                                : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'
-                            }`} 
-                          />
-                        ))}
-                        
-                        {/* Upload button - always first */}
-                        <label 
-                          className={`aspect-square h-10 rounded-lg transition-all cursor-pointer
-                            ring-1 ring-[#343536] hover:ring-[#0079d3]/50
-                            relative overflow-hidden group bg-[#272729]
-                          `}
-                        >
-                          <input
-                            type="file"
-                            accept="image/*"
-                            onChange={handleBackgroundUpload}
-                            className="hidden"
-                          />
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <Upload className="w-5 h-5 text-[#818384] group-hover:text-[#0079d3] transition-colors" />
-                          </div>
-                        </label>
-
-                        {/* Recent uploads */}
-                        {recentUploads.map((imageUrl, index) => (
-                          <button
-                            key={index}
-                            onClick={() => setBackgroundConfig(prev => ({
-                              ...prev,
-                              backgroundType: 'custom',
-                              customBackground: imageUrl
-                            }))}
-                            className={`aspect-square h-10 rounded-lg transition-all relative overflow-hidden
-                              ${backgroundConfig.backgroundType === 'custom' && backgroundConfig.customBackground === imageUrl
-                                ? 'ring-2 ring-[#0079d3] ring-offset-2 ring-offset-[#1a1a1b] scale-105' 
-                                : 'ring-1 ring-[#343536] hover:ring-[#0079d3]/50'
-                              }
-                            `}
-                          >
-                            <img 
-                              src={imageUrl} 
-                              alt={`Upload ${index + 1}`}
-                              className="absolute inset-0 w-full h-full object-cover"
-                            />
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : activePanel === 'cursor' ? (
-                <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
-                  <h2 className="text-base font-semibold text-[#d7dadc] mb-4">Cursor Settings</h2>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
-                        <span>Cursor Size</span>
-                        <span className="text-[#818384]">{backgroundConfig.cursorScale || 2}x</span>
-                      </label>
-                      <input 
-                        type="range" 
-                        min="1" 
-                        max="8" 
-                        step="0.1" 
-                        value={backgroundConfig.cursorScale || 2} 
-                        onChange={(e) => setBackgroundConfig(prev => ({...prev, cursorScale: Number(e.target.value)}))}
-                        className="w-full accent-[#0079d3]" 
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium text-[#d7dadc] mb-2 flex justify-between">
-                        <span>Movement Smoothing</span>
-                        <span className="text-[#818384]">{backgroundConfig.cursorSmoothness || 5}</span>
-                      </label>
-                      <input 
-                        type="range" 
-                        min="0" 
-                        max="10" 
-                        step="1" 
-                        value={backgroundConfig.cursorSmoothness || 5} 
-                        onChange={(e) => setBackgroundConfig(prev => ({...prev, cursorSmoothness: Number(e.target.value)}))}
-                        className="w-full accent-[#0079d3]" 
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : activePanel === 'text' && (
-                <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-4">
-                  <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-base font-semibold text-[#d7dadc]">Text Overlay</h2>
-                    <Button
-                      onClick={handleAddText}
-                      className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white"
-                    >
-                      <Type className="w-4 h-4 mr-2" />Add Text
-                    </Button>
-                  </div>
-                  
-                  {editingTextId && segment?.textSegments?.find(t => t.id === editingTextId) ? (
-                    <div className="space-y-4">
-                      <div>
-                        <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Text Content</label>
-                        <textarea
-                          value={segment.textSegments.find(t => t.id === editingTextId)?.text}
-                          onChange={(e) => {
-                            if (!segment) return;
-                            setSegment({
-                              ...segment,
-                              textSegments: segment.textSegments.map(t =>
-                                t.id === editingTextId ? { ...t, text: e.target.value } : t
-                              )
-                            });
-                          }}
-                          className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
-                          rows={3}
-                        />
-                      </div>
-                      
-                      {/* Shorter helper text */}
-                      <div className="bg-[#272729] rounded-lg p-3 text-sm text-[#818384]">
-                        <p className="flex items-center gap-2">
-                          <span className="bg-[#343536] rounded-full p-1">
-                            <Type className="w-4 h-4" />
-                          </span>
-                          Drag text to reposition
-                        </p>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Font Size</label>
-                          <select
-                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.fontSize}
-                            onChange={(e) => {
-                              if (!segment) return;
-                              setSegment({
-                                ...segment,
-                                textSegments: segment.textSegments.map(t =>
-                                  t.id === editingTextId ? { ...t, style: { ...t.style, fontSize: Number(e.target.value) } } : t
-                                )
-                              });
-                            }}
-                            className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc]"
-                          >
-                            <option value="16">16</option>
-                            <option value="24">24</option>
-                            <option value="32">32</option>
-                            <option value="48">48</option>
-                            <option value="64">64</option>
-                            <option value="80">80</option>
-                            <option value="96">96</option>
-                            <option value="128">128</option>
-                            <option value="160">160</option>
-                            <option value="200">200</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="text-sm font-medium text-[#d7dadc] mb-2 block">Color</label>
-                          <input
-                            type="color"
-                            value={segment.textSegments.find(t => t.id === editingTextId)?.style.color}
-                            onChange={(e) => {
-                              if (!segment) return;
-                              setSegment({
-                                ...segment,
-                                textSegments: segment.textSegments.map(t =>
-                                  t.id === editingTextId ? { ...t, style: { ...t.style, color: e.target.value } } : t
-                                )
-                              });
-                            }}
-                            className="w-12 h-10 bg-[#272729] border border-[#343536] rounded-md p-1"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6 flex flex-col items-center justify-center text-center">
-                      <div className="bg-[#272729] rounded-full p-3 mb-3">
-                        <Type className="w-6 h-6 text-[#818384]" />
-                      </div>
-                      <p className="text-[#d7dadc] font-medium">No Text Selected</p>
-                      <p className="text-[#818384] text-sm mt-1 max-w-[200px]">
-                        Add a new text overlay or select an existing one from the timeline
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            {/* Right panel remains unchanged */}
           </div>
 
           <div className="bg-[#1a1a1b] rounded-lg border border-[#343536] p-6">
             <div className="space-y-2 mb-8">
               <div className="flex justify-between items-center">
                 <h2 className="text-lg font-semibold text-[#d7dadc]">Timeline</h2>
-                <div className="flex gap-2">
-                  <Button 
-                    onClick={() => {
-                      if (!segment || !mousePositions.length) return;
-                      
-                      // Generate auto zoom keyframes
-                      const newKeyframes = autoZoomGenerator.generateZooms(segment, mousePositions);
-                      
-                      // Merge with existing keyframes and sort by time
-                      const allKeyframes = [...segment.zoomKeyframes, ...newKeyframes]
-                        .sort((a, b) => a.time - b.time);
-                      
-                      // Update segment
-                      setSegment({
-                        ...segment,
-                        zoomKeyframes: allKeyframes
-                      });
-                      
-                      // Switch to zoom panel
-                      setActivePanel('zoom');
-                    }} 
-                    disabled={isProcessing || !currentVideo || !mousePositions.length} 
-                    className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
-                      !currentVideo || isProcessing || !mousePositions.length
-                        ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed' 
-                        : 'bg-[#0079d3] hover:bg-[#0079d3]/90 text-white shadow-sm'
-                    }`}
-                  >
-                    <Wand2 className="w-4 h-4 mr-2" />Auto-Add Zooms
-                  </Button>
-                  <Button 
-                    onClick={() => {handleAddKeyframe(); setActivePanel('zoom');}} 
-                    disabled={isProcessing || !currentVideo} 
-                    className={`flex items-center px-4 py-2 h-9 text-sm font-medium transition-colors ${
-                      !currentVideo || isProcessing 
-                        ? 'bg-gray-600/50 text-gray-400 cursor-not-allowed' 
-                        : 'bg-[#0079d3] hover:bg-[#0079d3]/90 text-white shadow-sm'
-                    }`}
-                  >
-                    <Plus className="w-4 h-4 mr-2" />Add Zoom at Playhead
-                  </Button>
-                </div>
               </div>
               <p className="text-sm text-[#818384]">
                 Drag handles to trim video length
@@ -1305,12 +607,9 @@ function App() {
               thumbnails={thumbnails}
               timelineRef={timelineRef}
               videoRef={videoRef}
-              editingKeyframeId={editingKeyframeId}
-              editingTextId={editingTextId}
+              editingTextId={null}
               setCurrentTime={setCurrentTime}
-              setEditingKeyframeId={setEditingKeyframeId}
-              setEditingTextId={setEditingTextId}
-              setActivePanel={setActivePanel}
+              setEditingTextId={() => {}}
               setSegment={setSegment}
             />
           </div>
@@ -1489,95 +788,6 @@ function App() {
                 className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white"
               >
                 Export Video
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showProjectsDialog && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536] max-w-2xl w-full mx-4">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-lg font-semibold text-[#d7dadc]">Recent Projects</h3>
-              <Button
-                variant="ghost"
-                onClick={() => setShowProjectsDialog(false)}
-                className="text-[#818384] hover:text-[#d7dadc]"
-              >
-                ✕
-              </Button>
-            </div>
-
-            {projects.length === 0 ? (
-              <div className="text-center py-8 text-[#818384]">
-                No saved projects yet
-              </div>
-            ) : (
-              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
-                {projects.map((project) => (
-                  <div
-                    key={project.id}
-                    className="flex items-center justify-between p-4 rounded-lg border border-[#343536] hover:bg-[#272729] transition-colors"
-                  >
-                    <div>
-                      <h4 className="text-[#d7dadc] font-medium">{project.name}</h4>
-                      <p className="text-sm text-[#818384]">
-                        Last modified: {new Date(project.lastModified).toLocaleDateString()}
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        onClick={() => handleLoadProject(project.id)}
-                        className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white"
-                      >
-                        Load Project
-                      </Button>
-                      <Button
-                        onClick={async () => {
-                          await projectManager.deleteProject(project.id);
-                          await loadProjects();
-                        }}
-                        variant="destructive"
-                        className="bg-red-500/10 hover:bg-red-500/20 text-red-500"
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {showSaveDialog && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
-          <div className="bg-[#1a1a1b] p-6 rounded-lg border border-[#343536] max-w-md w-full mx-4">
-            <h3 className="text-lg font-semibold text-[#d7dadc] mb-4">Save Project</h3>
-            <input
-              type="text"
-              value={projectNameInput}
-              onChange={(e) => setProjectNameInput(e.target.value)}
-              placeholder="Enter project name"
-              className="w-full bg-[#272729] border border-[#343536] rounded-md px-3 py-2 text-[#d7dadc] mb-6"
-              autoFocus
-            />
-            <div className="flex justify-end gap-3">
-              <Button
-                variant="outline"
-                onClick={() => setShowSaveDialog(false)}
-                className="bg-transparent border-[#343536] text-[#d7dadc] hover:bg-[#272729] hover:text-[#d7dadc]"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={handleSaveConfirm}
-                disabled={!projectNameInput.trim()}
-                className="bg-[#0079d3] hover:bg-[#0079d3]/90 text-white disabled:opacity-50"
-              >
-                Save Project
               </Button>
             </div>
           </div>

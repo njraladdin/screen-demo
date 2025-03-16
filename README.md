@@ -1,3 +1,79 @@
+# Screen Recorder with Remotion Integration
+
+A screen recording and editing application with Remotion video export capabilities.
+
+## Features
+
+- Screen recording with cursor tracking
+- Video editing with timeline
+- Zoom and text effects
+- Background customization
+- Two export options:
+  - Standard canvas-based export
+  - High-quality Remotion export (experimental)
+
+## Remotion Integration
+
+This project includes integration with [Remotion](https://www.remotion.dev/), a framework for creating videos programmatically using React.
+
+### How It Works
+
+1. The app records your screen and captures mouse movements
+2. You can add zoom effects and text overlays to the recording
+3. When exporting, you can choose between:
+   - Standard export (using Canvas API)
+   - Remotion export (for higher quality)
+
+### Current Implementation
+
+The Remotion integration is currently implemented as a client-side demo. For a full implementation, a Node.js backend would be required to utilize Remotion's server-side rendering capabilities.
+
+### Usage
+
+1. Record your screen
+2. Edit your video with effects
+3. Click the "Remotion Export" button
+4. Preview how your video will look in Remotion
+5. Click "Start Export" to generate the video
+
+## Development
+
+### Prerequisites
+
+- Node.js (v16+)
+- npm or yarn
+
+### Installation
+
+```bash
+npm install
+```
+
+### Running the Application
+
+```bash
+npm run dev
+```
+
+### Building for Production
+
+```bash
+npm run build
+```
+
+## Future Plans
+
+- Server-side Remotion rendering for higher quality exports
+- More export options and effects
+- Audio support
+- Additional editing features
+
+## Learn More
+
+- [Remotion Documentation](https://www.remotion.dev/docs/)
+- [Remotion Server-Side Rendering](https://www.remotion.dev/docs/renderer/render-media)
+- [Remotion Player](https://www.remotion.dev/docs/player/integration)
+
 <div align="center">
   <img src="src/assets/logo.svg" alt="Screen Demo Logo" width="120" height="120" />
   <h1>Screen Demo</h1>

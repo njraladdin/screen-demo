@@ -28,9 +28,10 @@ UPDATE 3:
 ----
 refactor code, done 
 add text, done 
-fix timeout issue after recoridng long video (1min+)
+fix timeout issue after recoridng long video (1min+), done 
 
 fix rendering issues for long videos 
 fix background limit when zooming in
 Display keystrokes and keyboard shortcuts on screen 
 record audio, trim audio 
+add "help from founder" widget

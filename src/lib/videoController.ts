@@ -82,7 +82,6 @@ export class VideoController {
       tempCanvas: this.tempCanvas,
       segment: this.renderOptions?.segment!,
       backgroundConfig: this.renderOptions?.backgroundConfig!,
-      mousePositions: this.renderOptions?.mousePositions || [],
       currentTime: this.video.currentTime
     });
     
@@ -114,7 +113,6 @@ export class VideoController {
         tempCanvas: this.tempCanvas,
         segment: this.renderOptions.segment,
         backgroundConfig: this.renderOptions.backgroundConfig,
-        mousePositions: this.renderOptions.mousePositions,
         currentTime: this.video.currentTime
       });
     }
@@ -159,10 +157,10 @@ export class VideoController {
   };
 
   private handleSeeked = () => {
-    console.log('[VideoController] Seeked event fired', {
-      currentTime: this.video.currentTime,
-      readyState: this.video.readyState
-    });
+   // console.log('[VideoController] Seeked event fired', {
+   //   currentTime: this.video.currentTime,
+   //   readyState: this.video.readyState
+   // });
     this.setSeeking(false);
     this.setCurrentTime(this.video.currentTime);
     this.renderFrame();
@@ -435,7 +433,6 @@ export class VideoController {
     const initialSegment: VideoSegment = {
       trimStart: 0,
       trimEnd: this.duration,
-      zoomKeyframes: [],
       textSegments: []
     };
     return initialSegment;
